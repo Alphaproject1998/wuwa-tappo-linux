@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wuwa Tappo
+Comment=Wuthering Waves desktop pet
+Exec=env "WINEPREFIX=@WINEPREFIX@" "@PROJECT@/runtime/tappo-launch" %u
+Icon=wuwa-tappo
+StartupWMClass=wuwatappo.exe
+MimeType=x-scheme-handler/wuwa-buddy;
+Categories=Game;

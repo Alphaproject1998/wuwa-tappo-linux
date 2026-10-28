@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+project=$(dirname "$(dirname "$(realpath "$0")")")
+runtime="$project/build/wine-runtime"
+export WINEPREFIX="${WINEPREFIX:-$HOME/Games/wuwa-tappo}"
+
+if [ ! -x "$runtime/bin/wine" ]; then
+	notify-send -a "Wuwa Tappo" -u critical "Wuwa Tappo" "The patched Wine runtime is missing. Run make runtime in $project."
+	exit 1
+fi
+
+# A server left running by another Wine would be used instead of the patched one.
+if ! pgrep -u "$UID" -f '\\WuwaTappo\.exe( |$)' > /dev/null; then
+	"$runtime/bin/wineserver" -k 2> /dev/null
+	"$runtime/bin/wineserver" -w
+fi
+
+cd "$WINEPREFIX/drive_c/Program Files/WuwaTappoGlobal" || exit 1
+exec "$runtime/bin/wine" 'C:\Program Files\WuwaTappoGlobal\WuwaTappo.exe' "$@"

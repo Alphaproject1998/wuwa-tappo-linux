@@ -1,0 +1,12 @@
+[Unit]
+Description=Feed keyboard and mouse presses into Wuwa Tappo under Wine
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/python3 -I "@PROJECT@/bridge/tappo-bridge.py" --prefix "@WINEPREFIX@"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

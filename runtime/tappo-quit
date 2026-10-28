@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+project=$(dirname "$(dirname "$(realpath "$0")")")
+runtime="$project/build/wine-runtime"
+timeout="${TAPPO_QUIT_TIMEOUT:-15}"
+
+[ -x "$runtime/bin/wine" ] || exit 1
+
+for pid in $(pgrep -u "$UID" -f '\\WuwaTappo\.exe( |$)'); do
+	prefix=$(tr '\0' '\n' < "/proc/$pid/environ" 2> /dev/null | sed -n 's/^WINEPREFIX=//p')
+	export WINEPREFIX="${prefix:-$HOME/.wine}" WINEDEBUG=-all
+
+	# Plasma waits on logout scripts indefinitely, and a window that won't answer leaves Wine's end-task dialog up.
+	if timeout "$timeout" "$runtime/bin/wine" wineboot --end-session --kill --shutdown; then
+		echo "tappo-quit: ended the session in $WINEPREFIX" >&2
+	else
+		echo "tappo-quit: no clean end in $WINEPREFIX after ${timeout}s, killing it" >&2
+		"$runtime/bin/wineserver" -k
+	fi
+done

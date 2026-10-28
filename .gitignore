@@ -1,0 +1,6 @@
+.*
+!.gitignore
+!.github
+
+build/
+__pycache__/
