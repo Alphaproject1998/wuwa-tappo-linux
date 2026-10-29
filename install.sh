@@ -309,7 +309,12 @@ set_up_corners_exclusion
 
 say "All done"
 if ask "Start Wuwa Tappo now?" y; then
-	WINEPREFIX="$prefix" setsid -f runtime/tappo-launch > /dev/null 2>&1
+	# Started from here directly, Tappo would live in the terminal's cgroup, and System Monitor lists it under the terminal instead of as an app.
+	if command -v kstart > /dev/null; then
+		kstart --application wuwa-tappo > /dev/null 2>&1
+	else
+		WINEPREFIX="$prefix" setsid -f runtime/tappo-launch > /dev/null 2>&1
+	fi
 	echo "It takes a few seconds to appear. Log in from its panel, and the browser hands the login back to it."
 else
 	echo "Start Wuwa Tappo from the app menu whenever you like."

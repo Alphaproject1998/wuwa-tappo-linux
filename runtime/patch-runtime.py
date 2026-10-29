@@ -30,6 +30,19 @@ WINESERVER_TEXT_SEGMENT = 0x3000
 WINESERVER_TEXT_SEGMENT_SIZE = 0x78361
 WINESERVER_TEXT_SEGMENT_SIZES_AT = 0x108
 
+NTDLL_SET_PAGE_VPROT_MEMSET = 0x631e0
+NTDLL_SET_PAGE_VPROT_TAIL_MEMSET = 0x6321f
+NTDLL_MEMSET_GOT = 0x93be8
+NTDLL_THREAD_NAME_PID_CHECK = 0x5c96e
+NTDLL_THREAD_NAME_OTHER_PROCESS = 0x5c97d
+NTDLL_THREAD_NAME_DONE = 0x5c99d
+NTDLL_THREAD_NAME_WRITE = 0x5c9a8
+NTDLL_FILL_CAVE = 0x71d50
+NTDLL_NAME_CAVE = 0x71de0
+NTDLL_TEXT_SEGMENT = 0x8000
+NTDLL_TEXT_SEGMENT_SIZE = 0x69d41
+NTDLL_RODATA = 0x72000
+
 
 def rel32(target, next_instruction):
 	return struct.pack('<i', target - next_instruction)
@@ -117,6 +130,42 @@ def thread_input_detach_sites():
 	]
 
 
+def page_vprot_fill_sites():
+	cave, emit = assembler(NTDLL_FILL_CAVE)
+	emit(bytes.fromhex('400fb6c6' '49b80101010101010101' '4c0fafc0' '4c8d0c17'))
+	emit(bytes.fromhex('4c39cf7365'))
+	emit(bytes.fromhex('4989fa' '4981caff0f0000' '49ffc2' '4d39ca' '4d0f47d1' '4889f9'))
+	emit(bytes.fromhex('4c8d5908' '4d39d3770a' '4c39017513' '4c89d9ebed'))
+	emit(bytes.fromhex('4c39d17331' '38017505' '48ffc1ebf2'))
+	emit(bytes.fromhex('4151415256' '4c89d2' '4829fa'))
+	emit(bytes.fromhex('ff15'), NTDLL_MEMSET_GOT)
+	emit(bytes.fromhex('5e415a4159' '400fb6c6' '49b80101010101010101' '4c0fafc0'))
+	emit(bytes.fromhex('4c89d7eb96'))
+	emit(bytes.fromhex('c3'))
+
+	call, tail = NTDLL_SET_PAGE_VPROT_MEMSET, NTDLL_SET_PAGE_VPROT_TAIL_MEMSET
+	return [
+		(call, bytes.fromhex('ff15020a0300'), bytes.fromhex('e8') + rel32(NTDLL_FILL_CAVE, call + 5) + b'\x90'),
+		(tail, bytes.fromhex('ff25c3090300'), bytes.fromhex('e9') + rel32(NTDLL_FILL_CAVE, tail + 5) + b'\x90'),
+		(NTDLL_FILL_CAVE, bytes(len(cave)), bytes(cave)),
+	]
+
+
+def main_thread_name_sites():
+	cave, emit = assembler(NTDLL_NAME_CAVE)
+	emit(bytes.fromhex('3b850cffffff'))
+	emit(bytes.fromhex('0f84'), NTDLL_THREAD_NAME_DONE)
+	emit(bytes.fromhex('3b8508ffffff' '448b950cffffff'))
+	emit(bytes.fromhex('0f84'), NTDLL_THREAD_NAME_WRITE)
+	emit(bytes.fromhex('e9'), NTDLL_THREAD_NAME_OTHER_PROCESS)
+
+	check = NTDLL_THREAD_NAME_PID_CHECK
+	return [
+		(check, bytes.fromhex('3b8508ffffff' '448b950cffffff' '742b'), bytes.fromhex('e9') + rel32(NTDLL_NAME_CAVE, check + 5) + b'\x90'),
+		(NTDLL_NAME_CAVE, bytes(len(cave)), bytes(cave)),
+	]
+
+
 PATCHES = {
 	'bin/wineserver': {
 		'sha256': 'c9a0c615ddd8ba168b9fdf5efaaa4769cb2369782c766b579157ed0a5520977e',
@@ -126,6 +175,18 @@ PATCHES = {
 			# detach_thread_input() split a thread off even while other attachments still linked it, cutting Tappo's UI thread off from WebView2's cursors.
 			# Now a linked thread keeps the shared input, and the other thread gets the fresh one only if it has no links left.
 			*thread_input_detach_sites(),
+		],
+	},
+	'lib/wine/x86_64-unix/ntdll.so': {
+		'sha256': '98ef0d24e92466eda08a5585f5a4af5514c02d8c0d36d241d26af81fedfda0d7',
+		'sites': [
+			# Each page of a new view gets a protection byte even if only reserved, and a WebView2 renderer reserves about 1.6 TB, so each one held 400 MB of zeros.
+			# set_page_vprot() now skips any 4 KB of the table that already holds the value.
+			*page_vprot_fill_sites(),
+			# set_native_thread_name() renamed main threads too, which on Linux renames the whole process, so Tappo showed up as "main" and WebView2 as CrRendererMain.
+			# The main thread now keeps the exe name, as in Chromium's own Linux port.
+			*main_thread_name_sites(),
+			grow_text_segment(NTDLL_TEXT_SEGMENT, NTDLL_TEXT_SEGMENT_SIZE, NTDLL_RODATA),
 		],
 	},
 	'lib/wine/x86_64-unix/win32u.so': {

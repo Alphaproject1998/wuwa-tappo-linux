@@ -34,6 +34,7 @@ $(RUNTIME_STAMP): build/$(WINE_PACKAGE) runtime/patch-runtime.py
 	mv build/wine-extract/usr $(RUNTIME)
 	rmdir build/wine-extract
 	python3 -I runtime/patch-runtime.py $(RUNTIME)
+	ln -s wineserver $(RUNTIME)/bin/tappo-wineserver
 	touch $@
 
 runtime: $(RUNTIME_STAMP)

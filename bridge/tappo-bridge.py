@@ -10,6 +10,8 @@ from pathlib import Path
 import evdev
 from evdev import ecodes
 
+PR_SET_NAME = 15
+
 BUILD_DIR = Path(__file__).resolve().parent.parent / 'build'
 DEFAULT_HELPER = BUILD_DIR / 'tappo-input.exe.so'
 DEFAULT_WINE = BUILD_DIR / 'wine-runtime' / 'bin' / 'wine'
@@ -520,4 +522,5 @@ def parse_options():
 
 
 if __name__ == '__main__':
+	ctypes.CDLL(None).prctl(PR_SET_NAME, b'tappo-bridge')
 	asyncio.run(run(parse_options()))

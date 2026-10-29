@@ -8,16 +8,32 @@ export WINEPREFIX="${WINEPREFIX:-$HOME/Games/wuwa-tappo}"
 # That relies on WebView2 swapping with vsync off, which Wine leaves it at, and on a switch egl-x11 doesn't document.
 export __NV_X11_DISABLE_EXPLICIT_SYNC="${__NV_X11_DISABLE_EXPLICIT_SYNC:-1}"
 
+# NVIDIA's GL driver in WebView2's GPU process mallocs from many threads, and glibc kept what they freed in an arena per thread.
+# With two arenas, the first time the panel opened cost about 270 MB instead of 400 MB.
+export GLIBC_TUNABLES="${GLIBC_TUNABLES:-glibc.malloc.arena_max=2}"
+
 if [ ! -x "$runtime/bin/wine" ]; then
 	notify-send -a "Wuwa Tappo" -u critical "Wuwa Tappo" "The patched Wine runtime is missing. Run make runtime in $project."
 	exit 1
 fi
 
+cd "$WINEPREFIX/drive_c/Program Files/WuwaTappoGlobal" || exit 1
+
 # A server left running by another Wine would be used instead of the patched one.
 if ! pgrep -u "$UID" -f '\\WuwaTappo\.exe( |$)' > /dev/null; then
 	"$runtime/bin/wineserver" -k 2> /dev/null
 	"$runtime/bin/wineserver" -w
+	# WebView2 and Tappo both update themselves, and each new msedge.dll or WuwaTappo.exe needs laying out again.
+	python3 -I "$project/runtime/align-pe.py" "$WINEPREFIX"
+	# Wine would start a plain wineserver, which can't be told apart from other prefixes' in a process list.
+	"$runtime/bin/tappo-wineserver"
 fi
 
-cd "$WINEPREFIX/drive_c/Program Files/WuwaTappoGlobal" || exit 1
-exec "$runtime/bin/wine" 'C:\Program Files\WuwaTappoGlobal\WuwaTappo.exe' "$@"
+launch=("$runtime/bin/wine" 'C:\Program Files\WuwaTappoGlobal\WuwaTappo.exe' "$@")
+
+# Windows commits memory a 4 KB page at a time, but with transparent huge pages on, the first touch of any 2 MB stretch Chromium has committed takes all 2 MB, which cost Tappo about 180 MB.
+# PR_SET_THP_DISABLE carries over to every process Wine starts from here.
+if [ "${TAPPO_HUGE_PAGES:-0}" = 0 ]; then
+	exec python3 -I -c 'import ctypes, os, sys; ctypes.CDLL(None).prctl(41, 1, 0, 0, 0); os.execv(sys.argv[1], sys.argv[1:])' "${launch[@]}"
+fi
+exec "${launch[@]}"

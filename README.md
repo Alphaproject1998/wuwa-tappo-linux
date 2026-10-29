@@ -22,6 +22,8 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 - **It sits in a black box.** Wine draws Tappo into windows with no alpha channel, so everything that should be see-through arrives as black. The prefix is set up so Wine gives everything in it 32-bit windows instead, and the transparency comes through the same as on Windows, soft edges included.
 - **No capitals in text boxes, white flashes and blinking when you drag the pet, and a resize cursor over the whole settings panel.** All Wine bugs, fixed by patching a private copy of Wine that only Tappo uses. Your system Wine isn't touched.
 - **The panels lag behind.** On NVIDIA, Wine copies each frame of a panel before it has finished arriving, so a tab or button shows its change late, or not until you move the mouse. The launcher turns off explicit sync in NVIDIA's EGL for Tappo only (`__NV_X11_DISABLE_EXPLICIT_SYNC=1`), so each frame is finished before Wine copies it.
+- **It eats about 8 GB of RAM.** Nearly all of that was Wine: it gave every WebView2 process its own copy of a 355 MB DLL, and every renderer 400 MB of bookkeeping for memory it never touches. It's about 1.5 GB now, see [Memory](#memory).
+- **You can't tell what's what in a process list.** Wine renames a process whenever a program names its main thread, so Tappo showed up as `main` and its WebView2 processes as `CrRendererMain`, `CrGpuMain` and friends. They keep their own names now: `WuwaTappo.exe`, `msedgewebview2.` (Linux cuts process names at 15 characters), and Tappo's Wine server runs as `tappo-wineserver`, the bridge as `tappo-bridge` and its helper as `tappo-input.exe`. The rest, `explorer.exe`, `services.exe` and so on, are Wine's own, running in Tappo's prefix.
 - **No proper menu entry.** You get one that starts Tappo, catches the `wuwa-buddy://` link the browser login sends back, and can start it when you log in.
 
 ## Requirements
@@ -106,6 +108,17 @@ Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 - `--cursor-recheck SECONDS`: how often to look for a window that has opened over the moved cursor, and move it again if one has. 1 by default, 0 never looks.
 
 To change them, run `systemctl --user edit tappo-bridge.service` and override `ExecStart`.
+
+## Memory
+
+Tappo is seven WebView2 windows, so it was never going to be tiny, but most of the 8 GB it used was Wine's doing:
+
+- Wine can only share a DLL between processes by mapping it straight from the file, and it can only do that when every section starts on a 4 KB boundary in the file. `msedge.dll` uses 512-byte boundaries, so each of the eleven WebView2 processes that load it read in its own 335 MB copy. Before each start the launcher runs `runtime/align-pe.py`, which rewrites `msedge.dll` in the prefix with its sections moved onto 4 KB boundaries, the code and data themselves untouched. It does the same for `WuwaTappo.exe`, whose 64 MB of built-in web files then only take up memory once they're read. It also clears the ASLR flag on `msedge.dll`, because Wine relocates an ASLR DLL separately in every process, which made part of it private to each one again. Edge's own copy in `EdgeCore` stays as it was, and both files get rewritten again after an update.
+- Wine keeps a byte of bookkeeping for every 4 KB page a process reserves, and wrote all of them even for pages that are never used. Each WebView2 renderer reserves about 1.6 TB, so that was 400 MB of zeros per renderer. The patched Wine skips writes that wouldn't change anything.
+- With transparent huge pages set to `always`, the kernel hands out a whole 2 MB the first time Chromium touches any part of a 2 MB stretch, where Windows works in 4 KB pages. The launcher turns them off for Tappo only. `TAPPO_HUGE_PAGES=1` leaves them on.
+- The first time you open the settings panel, NVIDIA's driver takes about 270 MB in WebView2's GPU process and holds on to it until Tappo closes. Left alone, glibc kept nearer 400 MB, so the launcher caps it at two malloc arenas. Setting your own `GLIBC_TUNABLES` replaces that.
+
+What's left is mostly WebView2's seven renderers, one per window including the five you rarely see, which WebView2 won't let share a process, and NVIDIA's driver.
 
 ## Known issues
 
