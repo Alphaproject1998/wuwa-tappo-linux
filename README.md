@@ -18,6 +18,7 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 
 - **It crashes on startup.** Wine bug 60225 takes Tappo down as it starts. A patched `ole32.dll` goes into the prefix, and only Tappo uses it.
 - **It only hears you while it has focus.** On Wayland, Wine never sees input aimed at other apps, so the pet only counted clicks on itself, which is the one time you're not typing. The bridge reads your keyboards and mice and sends Tappo a stand-in key for every press. More on that [below](#the-bridge).
+- **It stays see-through after you hover it.** With "Turns see-through on hover" on, moving off the pet left it faded until you hovered another pet or a panel. Wine only finds out where the pointer is while it's over one of the windows Xwayland handles, so Tappo kept seeing it wherever it left. The bridge notices when the pointer has left them all and moves the cursor Wine sees to the nearest spot clear of them. Your real cursor stays where it is.
 - **It sits in a black box.** Wine draws Tappo into windows with no alpha channel, so everything that should be see-through arrives as black. The prefix is set up so Wine gives everything in it 32-bit windows instead, and the transparency comes through the same as on Windows, soft edges included.
 - **No capitals in text boxes, white flashes and blinking when you drag the pet, and a resize cursor over the whole settings panel.** All Wine bugs, fixed by patching a private copy of Wine that only Tappo uses. Your system Wine isn't touched.
 - **The panels lag behind.** On NVIDIA, Wine copies each frame of a panel before it has finished arriving, so a tab or button shows its change late, or not until you move the mouse. The launcher turns off explicit sync in NVIDIA's EGL for Tappo only (`__NV_X11_DISABLE_EXPLICIT_SYNC=1`), so each frame is finished before Wine copies it.
@@ -92,12 +93,17 @@ git pull
 
 While Tappo runs, the bridge reads every keyboard and mouse, but what it passes on is only a stand-in: F13 for keys on the left half of the keyboard, F14 for the right half and for mouse clicks. Tappo itself just alternates paws on every tap, so the split only matters if it ever starts going by which side of the keyboard you hit. It never sends what you actually typed, because Wine would deliver real keys to whichever Tappo window it last focused, even while you're typing somewhere else. Nobody wants half a Discord message turning up in Tappo's settings.
 
+It also watches the pointer through its own connection to Xwayland, so it can move the cursor Wine sees once yours has left every X window.
+
 Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 
 - `--mouse-hand left|right|off`: which stand-in a click sends, or ignore clicks.
 - `--real-keys`: send your real keys instead of stand-ins. Tappo then sees everything you type, and so does whichever of its windows Wine last focused.
 - `--ignore NAME`: skip input devices whose name contains NAME. Repeatable; the default skips YubiKeys.
 - `--hardware-input`: inject through Wine's private hardware-input call, so Tappo can't tell the presses were injected.
+- `--cursor-poll SECONDS`: how often to check whether the pointer has left every X window, 0.1 by default. 0 stops the bridge moving Wine's cursor at all.
+- `--cursor-margin PIXELS`: how far from any X window that moved cursor lands, when there's room. 32 by default.
+- `--cursor-recheck SECONDS`: how often to look for a window that has opened over the moved cursor, and move it again if one has. 1 by default, 0 never looks.
 
 To change them, run `systemctl --user edit tappo-bridge.service` and override `ExecStart`.
 
@@ -105,6 +111,7 @@ To change them, run `systemctl --user edit tappo-bridge.service` and override `E
 
 - Inside Tappo's panels, the hand and text cursors show as the normal arrow. The panels are WebView2, which runs as its own process, and Wine can't apply a cursor that belongs to another process.
 - Clicking the pet, or typing in one of its panels, counts twice: once through Wine and once through the bridge.
+- While your pointer is over other apps, Tappo sees the cursor parked just clear of the X windows, not where it really is.
 - The pet's state can reset when Tappo is killed rather than quit. Quitting from the tray or logging out of Plasma keeps it, but a shutdown that skips Plasma, such as `systemctl poweroff` from a terminal, still kills it.
 
 ## Contributing

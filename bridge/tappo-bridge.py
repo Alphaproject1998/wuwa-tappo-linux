@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import ctypes
 import os
 import signal
 import sys
@@ -39,6 +40,47 @@ EXTENDED_SCAN_CODES = {
 
 MOUSE_BUTTONS = {ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE, ecodes.BTN_SIDE, ecodes.BTN_EXTRA}
 
+INPUT_OUTPUT = 1
+IS_VIEWABLE = 2
+BUTTON_MASKS = 0x1f00
+SHAPE_BOUNDING = 0
+SHAPE_INPUT = 2
+
+X_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+
+
+class XRectangle(ctypes.Structure):
+	_fields_ = [
+		('x', ctypes.c_short), ('y', ctypes.c_short),
+		('width', ctypes.c_ushort), ('height', ctypes.c_ushort),
+	]
+
+
+class XWindowAttributes(ctypes.Structure):
+	_fields_ = [
+		('x', ctypes.c_int), ('y', ctypes.c_int), ('width', ctypes.c_int), ('height', ctypes.c_int),
+		('border_width', ctypes.c_int), ('depth', ctypes.c_int), ('visual', ctypes.c_void_p),
+		('root', ctypes.c_ulong), ('window_class', ctypes.c_int), ('bit_gravity', ctypes.c_int),
+		('win_gravity', ctypes.c_int), ('backing_store', ctypes.c_int), ('backing_planes', ctypes.c_ulong),
+		('backing_pixel', ctypes.c_ulong), ('save_under', ctypes.c_int), ('colormap', ctypes.c_ulong),
+		('map_installed', ctypes.c_int), ('map_state', ctypes.c_int), ('all_event_masks', ctypes.c_long),
+		('your_event_mask', ctypes.c_long), ('do_not_propagate_mask', ctypes.c_long),
+		('override_redirect', ctypes.c_int), ('screen', ctypes.c_void_p),
+	]
+
+
+class XClassHint(ctypes.Structure):
+	_fields_ = [('res_name', ctypes.c_void_p), ('res_class', ctypes.c_void_p)]
+
+
+class XRRMonitorInfo(ctypes.Structure):
+	_fields_ = [
+		('name', ctypes.c_ulong), ('primary', ctypes.c_int), ('automatic', ctypes.c_int),
+		('noutput', ctypes.c_int), ('x', ctypes.c_int), ('y', ctypes.c_int),
+		('width', ctypes.c_int), ('height', ctypes.c_int), ('mwidth', ctypes.c_int), ('mheight', ctypes.c_int),
+		('outputs', ctypes.c_void_p),
+	]
+
 
 def log(message):
 	print(message, file=sys.stderr, flush=True)
@@ -73,6 +115,158 @@ def wanted_device(device, ignore):
 	return ecodes.KEY_A in keys or ecodes.BTN_LEFT in keys
 
 
+def bind(library, name, restype, *argtypes):
+	function = getattr(library, name)
+	function.restype = restype
+	function.argtypes = argtypes
+	return function
+
+
+def inside(x, y, rectangles):
+	return any(left <= x < right and top <= y < bottom for left, top, right, bottom in rectangles)
+
+
+def owned_under(position, areas):
+	return next((owned for area, owned in reversed(areas) if inside(*position, [area])), False)
+
+
+def free_spot(origin, areas, screens, margin):
+	blocked = [(left - margin, top - margin, right + margin, bottom + margin) for left, top, right, bottom in areas]
+	# The nearest free point is either the origin or in line with an edge of a screen or a blocked area.
+	xs, ys = {origin[0]}, {origin[1]}
+	for left, top, right, bottom in blocked:
+		xs.update((left - 1, right))
+		ys.update((top - 1, bottom))
+	for left, top, right, bottom in screens:
+		xs.update((left, right - 1))
+		ys.update((top, bottom - 1))
+	free = [(x, y) for x in xs for y in ys if inside(x, y, screens) and not inside(x, y, blocked)]
+	return min(free, key=lambda point: (point[0] - origin[0]) ** 2 + (point[1] - origin[1]) ** 2, default=None)
+
+
+class XDisplay:
+	def __init__(self):
+		x11 = ctypes.CDLL('libX11.so.6')
+		xext = ctypes.CDLL('libXext.so.6')
+		xrandr = ctypes.CDLL('libXrandr.so.2')
+		pointer = ctypes.c_void_p
+		window = ctypes.c_ulong
+
+		self.close_display = bind(x11, 'XCloseDisplay', ctypes.c_int, pointer)
+		self.query_pointer = bind(x11, 'XQueryPointer', ctypes.c_int, pointer, window, *[pointer] * 7)
+		self.query_tree = bind(x11, 'XQueryTree', ctypes.c_int, pointer, window, *[pointer] * 4)
+		self.window_attributes = bind(x11, 'XGetWindowAttributes', ctypes.c_int, pointer, window, pointer)
+		self.class_hint = bind(x11, 'XGetClassHint', ctypes.c_int, pointer, window, pointer)
+		self.free = bind(x11, 'XFree', ctypes.c_int, pointer)
+		self.shape_rectangles = bind(
+			xext, 'XShapeGetRectangles', ctypes.POINTER(XRectangle), pointer, window, ctypes.c_int, pointer, pointer,
+		)
+		self.get_monitors = bind(xrandr, 'XRRGetMonitors', ctypes.POINTER(XRRMonitorInfo), pointer, window, ctypes.c_int, pointer)
+		self.free_monitors = bind(xrandr, 'XRRFreeMonitors', None, ctypes.POINTER(XRRMonitorInfo))
+
+		# Otherwise a window closing mid-scan would end the bridge, since Xlib's default handler exits on any error.
+		self.ignore_errors = X_ERROR_HANDLER(lambda display, error: 0)
+		bind(x11, 'XSetErrorHandler', pointer, X_ERROR_HANDLER)(self.ignore_errors)
+
+		self.display = bind(x11, 'XOpenDisplay', pointer, ctypes.c_char_p)(None)
+		if not self.display:
+			raise OSError(f'cannot open X display {os.environ.get("DISPLAY", "(DISPLAY not set)")}')
+		self.root = bind(x11, 'XDefaultRootWindow', window, pointer)(self.display)
+
+	def close(self):
+		self.close_display(self.display)
+
+	def pointer(self):
+		root, child = ctypes.c_ulong(), ctypes.c_ulong()
+		x, y, window_x, window_y = (ctypes.c_int() for _ in range(4))
+		buttons = ctypes.c_uint()
+		self.query_pointer(
+			self.display, self.root, *(ctypes.byref(value) for value in (root, child, x, y, window_x, window_y, buttons)),
+		)
+		return (x.value, y.value), child.value, buttons.value
+
+	def takes_pointer(self, window):
+		attributes = XWindowAttributes()
+		if not self.window_attributes(self.display, window, ctypes.byref(attributes)):
+			return False
+		if attributes.window_class == INPUT_OUTPUT:
+			return True
+		# KWin's InputOnly window spans the root, while Wine confines a game's pointer (ClipCursor) to one sized to the clip rectangle.
+		# Parking then would warp the real pointer out of the game.
+		root = XWindowAttributes()
+		if not self.window_attributes(self.display, self.root, ctypes.byref(root)):
+			return False
+		return (attributes.width, attributes.height) != (root.width, root.height)
+
+	def window_class(self, window):
+		hint = XClassHint()
+		if not self.class_hint(self.display, window, ctypes.byref(hint)):
+			return None
+		window_class = ctypes.string_at(hint.res_class).decode(errors='replace') if hint.res_class else None
+		for value in (hint.res_name, hint.res_class):
+			if value:
+				self.free(value)
+		return window_class
+
+	def input_areas(self, owner_class):
+		root, parent = ctypes.c_ulong(), ctypes.c_ulong()
+		children = ctypes.POINTER(ctypes.c_ulong)()
+		count = ctypes.c_uint()
+		if not self.query_tree(
+			self.display, self.root, ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count),
+		):
+			return []
+
+		areas = []
+		for window in children[:count.value]:
+			attributes = XWindowAttributes()
+			if not self.window_attributes(self.display, window, ctypes.byref(attributes)):
+				continue
+			# InputOnly windows never get a Wayland surface, and KWin's root-sized one would block every spot.
+			if attributes.map_state != IS_VIEWABLE or attributes.window_class != INPUT_OUTPUT:
+				continue
+			# Wine cuts its windows down with the bounding shape alone, and X only takes input where that and the input shape overlap.
+			# The pet's full-screen stage has an empty input shape, so it never takes the pointer.
+			bounding = self.shape_extents(window, SHAPE_BOUNDING)
+			input_shape = self.shape_extents(window, SHAPE_INPUT)
+			if not bounding or not input_shape:
+				continue
+			left, top = max(bounding[0], input_shape[0]), max(bounding[1], input_shape[1])
+			right, bottom = min(bounding[2], input_shape[2]), min(bounding[3], input_shape[3])
+			if left < right and top < bottom:
+				area = (attributes.x + left, attributes.y + top, attributes.x + right, attributes.y + bottom)
+				areas.append((area, self.window_class(window) == owner_class))
+		self.free(children)
+		return areas
+
+	def shape_extents(self, window, kind):
+		count, ordering = ctypes.c_int(), ctypes.c_int()
+		rectangles = self.shape_rectangles(self.display, window, kind, ctypes.byref(count), ctypes.byref(ordering))
+		if not rectangles:
+			return None
+		shape = rectangles[:count.value]
+		extents = (
+			min(rectangle.x for rectangle in shape),
+			min(rectangle.y for rectangle in shape),
+			max(rectangle.x + rectangle.width for rectangle in shape),
+			max(rectangle.y + rectangle.height for rectangle in shape),
+		)
+		self.free(rectangles)
+		return extents
+
+	def screens(self):
+		count = ctypes.c_int()
+		monitors = self.get_monitors(self.display, self.root, 1, ctypes.byref(count))
+		if not monitors:
+			return []
+		screens = [
+			(monitor.x, monitor.y, monitor.x + monitor.width, monitor.y + monitor.height)
+			for monitor in monitors[:count.value]
+		]
+		self.free_monitors(monitors)
+		return screens
+
+
 class Session:
 	def __init__(self, options, prefix):
 		self.options = options
@@ -81,13 +275,25 @@ class Session:
 		self.readers = {}
 		self.pressed = {}
 		self.last_hand = 'right'
+		self.x = None
+		self.watcher = None
 
 	async def start(self):
 		await self.start_helper()
 		self.scanner = asyncio.create_task(self.scan_devices())
+		if self.options.cursor_poll > 0:
+			try:
+				self.x = XDisplay()
+			except OSError as error:
+				log(f'not moving the cursor off X windows: {error}')
+			else:
+				self.watcher = asyncio.create_task(self.watch_pointer())
 
 	async def stop(self):
 		self.scanner.cancel()
+		if self.watcher:
+			self.watcher.cancel()
+			self.x.close()
 		for reader in self.readers.values():
 			reader.cancel()
 		self.readers.clear()
@@ -127,6 +333,44 @@ class Session:
 				log(f'reading {device.name} ({path})')
 				self.readers[path] = asyncio.create_task(self.read_device(path, device))
 			await asyncio.sleep(3)
+
+	async def watch_pointer(self):
+		loop = asyncio.get_running_loop()
+		owner_class = self.options.process_name.lower()
+		parked = None
+		parked_window = None
+		checked = 0
+		last_position = None
+		while True:
+			await asyncio.sleep(self.options.cursor_poll)
+			position, window, buttons = self.x.pointer()
+			moved, last_position = position != last_position, position
+			if position == parked:
+				# Xwayland's child at a parked spot can't be trusted, so a change in it only prompts a scan.
+				due = self.options.cursor_recheck and loop.time() - checked >= self.options.cursor_recheck
+				if window == parked_window and not due:
+					continue
+				parked_window = window
+				checked = loop.time()
+			# Dragging takes the pointer outside the pet's shape while X still tracks it, so a held button or a moving pointer hasn't left.
+			elif moved or buttons & BUTTON_MASKS or (window and self.x.takes_pointer(window)):
+				continue
+
+			areas = self.x.input_areas(owner_class)
+			# Only Tappo hit-tests the spot Wine remembers, so a stale one over another app or over nothing is left alone.
+			if not owned_under(position, areas):
+				continue
+			blocked = [area for area, _ in areas]
+			screens = self.x.screens()
+			spot = free_spot(position, blocked, screens, self.options.cursor_margin) or free_spot(position, blocked, screens, 0)
+			checked = loop.time()
+			if not spot:
+				if position != parked:
+					log(f'nowhere clear of X windows to move the cursor to from {position[0]},{position[1]}')
+				parked, parked_window = position, window
+				continue
+			parked, parked_window = spot, None
+			await self.send(f'move {spot[0]} {spot[1]}')
 
 	async def read_device(self, path, device):
 		try:
@@ -168,15 +412,18 @@ class Session:
 			if not stand_in:
 				return
 
+		vk, scan, extended = stand_in
+		await self.send(f'key {vk:x} {scan:x} {extended} {int(down)}')
+
+	async def send(self, command):
 		if self.helper.returncode is not None:
 			if not find_app(self.options.process_name, self.prefix):
 				return
 			log(f'helper exited with {self.helper.returncode}, restarting')
 			await self.start_helper()
 
-		vk, scan, extended = stand_in
 		try:
-			self.helper.stdin.write(f'key {vk:x} {scan:x} {extended} {int(down)}\n'.encode())
+			self.helper.stdin.write(f'{command}\n'.encode())
 			await self.helper.stdin.drain()
 		except (BrokenPipeError, ConnectionResetError):
 			log('helper pipe closed')
@@ -242,6 +489,20 @@ def parse_options():
 	parser.add_argument(
 		'--hardware-input', action='store_true',
 		help='send through Wine\'s private hardware-input call so the app cannot tell the presses were injected',
+	)
+	parser.add_argument(
+		'--cursor-poll', type=float, default=0.1,
+		help='seconds between checks for the pointer having left every X window, after which the cursor Wine sees '
+		'is moved clear of them; 0 turns this off',
+	)
+	parser.add_argument(
+		'--cursor-margin', type=int, default=32,
+		help='pixels to keep between that moved cursor and any X window, when there is room',
+	)
+	parser.add_argument(
+		'--cursor-recheck', type=float, default=1.0,
+		help='seconds between looks for a window that has opened over the moved cursor, which Xwayland does not report; '
+		'0 never looks',
 	)
 	parser.add_argument('--poll', type=float, default=2.0, help='seconds between checks for the app')
 	parser.add_argument(
