@@ -3,6 +3,11 @@ project=$(dirname "$(dirname "$(realpath "$0")")")
 runtime="$project/build/wine-runtime"
 export WINEPREFIX="${WINEPREFIX:-$HOME/Games/wuwa-tappo}"
 
+# With explicit sync on, Xwayland only takes an NVIDIA frame once it has finished rendering, but Wine copies WebView2's frames into Tappo's windows straight away, so the panels always showed the frame before.
+# With it off, NVIDIA's EGL finishes each frame before handing it over.
+# That relies on WebView2 swapping with vsync off, which Wine leaves it at, and on a switch egl-x11 doesn't document.
+export __NV_X11_DISABLE_EXPLICIT_SYNC="${__NV_X11_DISABLE_EXPLICIT_SYNC:-1}"
+
 if [ ! -x "$runtime/bin/wine" ]; then
 	notify-send -a "Wuwa Tappo" -u critical "Wuwa Tappo" "The patched Wine runtime is missing. Run make runtime in $project."
 	exit 1

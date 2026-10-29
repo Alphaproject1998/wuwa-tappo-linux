@@ -20,6 +20,7 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 - **It only hears you while it has focus.** On Wayland, Wine never sees input aimed at other apps, so the pet only counted clicks on itself, which is the one time you're not typing. The bridge reads your keyboards and mice and sends Tappo a stand-in key for every press. More on that [below](#the-bridge).
 - **It sits in a black box.** Wine draws Tappo into windows with no alpha channel, so everything that should be see-through arrives as black. The prefix is set up so Wine gives everything in it 32-bit windows instead, and the transparency comes through the same as on Windows, soft edges included.
 - **No capitals in text boxes, white flashes and blinking when you drag the pet, and a resize cursor over the whole settings panel.** All Wine bugs, fixed by patching a private copy of Wine that only Tappo uses. Your system Wine isn't touched.
+- **The panels lag behind.** On NVIDIA, Wine copies each frame of a panel before it has finished arriving, so a tab or button shows its change late, or not until you move the mouse. The launcher turns off explicit sync in NVIDIA's EGL for Tappo only (`__NV_X11_DISABLE_EXPLICIT_SYNC=1`), so each frame is finished before Wine copies it.
 - **No proper menu entry.** You get one that starts Tappo, catches the `wuwa-buddy://` link the browser login sends back, and can start it when you log in.
 
 ## Requirements
