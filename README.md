@@ -99,6 +99,8 @@ The stand-ins also mean Tappo can't keylog you. On Windows its keyboard hook see
 
 It also watches the pointer through its own connection to Xwayland, so it can move the cursor Wine sees once yours has left every X window. The same connection tells it when a click or key went to one of Tappo's own windows, which Wine already passes to Tappo, so that one gets no stand-in and doesn't count twice.
 
+Controllers don't go through the bridge at all. Tappo reads them itself through XInput, and Wine passes the pad's buttons on whichever window has focus, so controller presses count while you're playing, the same as on Windows.
+
 Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 
 - `--mouse-hand left|right|off`: which stand-in a click sends, or ignore clicks.
