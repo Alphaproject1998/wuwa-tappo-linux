@@ -93,9 +93,11 @@ git pull
 
 `bridge/tappo-bridge.py` runs as the `tappo-bridge` user service. It does nothing until Tappo is running, and stops again 15 seconds after it closes.
 
-While Tappo runs, the bridge reads every keyboard and mouse, but what it passes on is only a stand-in: F13 for keys on the left half of the keyboard, F14 for the right half and for mouse clicks. Tappo itself just alternates paws on every tap, so the split only matters if it ever starts going by which side of the keyboard you hit. It never sends what you actually typed, because Wine would deliver real keys to whichever Tappo window it last focused, even while you're typing somewhere else. Nobody wants half a Discord message turning up in Tappo's settings.
+While Tappo runs, the bridge reads every keyboard and mouse, but what it passes on is only a stand-in: F13 for keys on the left half of the keyboard, F14 for the right half and for mouse clicks. Tappo only counts a key once it's let go, and ignores a key it already sees held, so a key pressed while another stand-in is down gets the next free one instead: the odd F-keys up to F23 on the left, the even ones up to F24 on the right. Tappo itself just alternates paws on every tap, so the split only matters if it ever starts going by which side of the keyboard you hit. It never sends what you actually typed, because Wine would deliver real keys to whichever Tappo window it last focused, even while you're typing somewhere else. Nobody wants half a Discord message turning up in Tappo's settings.
 
-It also watches the pointer through its own connection to Xwayland, so it can move the cursor Wine sees once yours has left every X window.
+The stand-ins also mean Tappo can't keylog you. On Windows its keyboard hook sees every key you press in every app; here all it ever gets from the bridge is that some key went down on one side of the keyboard, so even if it wanted to record what you type, there's nothing to record. The only real keys it sees are the ones you type into its own windows.
+
+It also watches the pointer through its own connection to Xwayland, so it can move the cursor Wine sees once yours has left every X window. The same connection tells it when a click or key went to one of Tappo's own windows, which Wine already passes to Tappo, so that one gets no stand-in and doesn't count twice.
 
 Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 
@@ -106,6 +108,7 @@ Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 - `--cursor-poll SECONDS`: how often to check whether the pointer has left every X window, 0.1 by default. 0 stops the bridge moving Wine's cursor at all.
 - `--cursor-margin PIXELS`: how far from any X window that moved cursor lands, when there's room. 32 by default.
 - `--cursor-recheck SECONDS`: how often to look for a window that has opened over the moved cursor, and move it again if one has. 1 by default, 0 never looks.
+- `--direct-wait SECONDS`: how long to wait for Xwayland to report a press while one of Tappo's windows has the keyboard or the pointer, to tell whether Wine got it itself. 0.05 by default; 0 sends a stand-in for everything.
 
 To change them, run `systemctl --user edit tappo-bridge.service` and override `ExecStart`.
 
@@ -123,7 +126,6 @@ What's left is mostly WebView2's seven renderers, one per window including the f
 ## Known issues
 
 - Inside Tappo's panels, the hand and text cursors show as the normal arrow. The panels are WebView2, which runs as its own process, and Wine can't apply a cursor that belongs to another process.
-- Clicking the pet, or typing in one of its panels, counts twice: once through Wine and once through the bridge.
 - While your pointer is over other apps, Tappo sees the cursor parked just clear of the X windows, not where it really is.
 - The pet's state can reset when Tappo is killed rather than quit. Quitting from the tray or logging out of Plasma keeps it, but a shutdown that skips Plasma, such as `systemctl poweroff` from a terminal, still kills it.
 

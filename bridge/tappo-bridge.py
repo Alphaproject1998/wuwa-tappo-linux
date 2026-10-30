@@ -25,11 +25,13 @@ LEFT_HAND_KEYS = {
 	ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTMETA, ecodes.KEY_LEFTALT,
 }
 
-# F13 and F14, because they type nothing into whichever Tappo window Wine last focused.
+# F13 to F24, because they type nothing into whichever Tappo window Wine last focused.
+# Tappo ignores a press of a key it already holds and counts the release, so every key held at once needs its own.
 STAND_INS = {
-	'left': (0x7c, 0x64),
-	'right': (0x7d, 0x65),
+	'left': [(0x7c, 0x64, 0), (0x7e, 0x66, 0), (0x80, 0x68, 0), (0x82, 0x6a, 0), (0x84, 0x6c, 0), (0x86, 0x6e, 0)],
+	'right': [(0x7d, 0x65, 0), (0x7f, 0x67, 0), (0x81, 0x69, 0), (0x83, 0x6b, 0), (0x85, 0x6d, 0), (0x87, 0x76, 0)],
 }
+OTHER_HAND = {'left': 'right', 'right': 'left'}
 
 # Up to KEY_F12 an evdev code is its PC set 1 scan code; these need the E0 prefix instead.
 EXTENDED_SCAN_CODES = {
@@ -41,6 +43,7 @@ EXTENDED_SCAN_CODES = {
 }
 
 MOUSE_BUTTONS = {ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE, ecodes.BTN_SIDE, ecodes.BTN_EXTRA}
+BUTTON_STATE = {ecodes.BTN_LEFT: 0x100, ecodes.BTN_MIDDLE: 0x200, ecodes.BTN_RIGHT: 0x400}
 
 INPUT_OUTPUT = 1
 IS_VIEWABLE = 2
@@ -156,6 +159,8 @@ class XDisplay:
 
 		self.close_display = bind(x11, 'XCloseDisplay', ctypes.c_int, pointer)
 		self.query_pointer = bind(x11, 'XQueryPointer', ctypes.c_int, pointer, window, *[pointer] * 7)
+		self.get_input_focus = bind(x11, 'XGetInputFocus', ctypes.c_int, pointer, pointer, pointer)
+		self.query_keymap = bind(x11, 'XQueryKeymap', ctypes.c_int, pointer, pointer)
 		self.query_tree = bind(x11, 'XQueryTree', ctypes.c_int, pointer, window, *[pointer] * 4)
 		self.window_attributes = bind(x11, 'XGetWindowAttributes', ctypes.c_int, pointer, window, pointer)
 		self.class_hint = bind(x11, 'XGetClassHint', ctypes.c_int, pointer, window, pointer)
@@ -186,6 +191,19 @@ class XDisplay:
 			self.display, self.root, *(ctypes.byref(value) for value in (root, child, x, y, window_x, window_y, buttons)),
 		)
 		return (x.value, y.value), child.value, buttons.value
+
+	def focus(self):
+		window, revert = ctypes.c_ulong(), ctypes.c_int()
+		self.get_input_focus(self.display, ctypes.byref(window), ctypes.byref(revert))
+		return window.value
+
+	def holds(self, code):
+		if code in BUTTON_STATE:
+			return bool(self.pointer()[2] & BUTTON_STATE[code])
+		keys = ctypes.create_string_buffer(32)
+		self.query_keymap(self.display, keys)
+		keycode = code + 8
+		return keycode < 256 and bool(keys.raw[keycode // 8] >> keycode % 8 & 1)
 
 	def takes_pointer(self, window):
 		attributes = XWindowAttributes()
@@ -273,6 +291,7 @@ class Session:
 	def __init__(self, options, prefix):
 		self.options = options
 		self.prefix = prefix
+		self.owner_class = options.process_name.lower()
 		self.helper = None
 		self.readers = {}
 		self.pressed = {}
@@ -283,22 +302,24 @@ class Session:
 	async def start(self):
 		await self.start_helper()
 		self.scanner = asyncio.create_task(self.scan_devices())
-		if self.options.cursor_poll > 0:
+		if self.options.cursor_poll > 0 or self.options.direct_wait > 0:
 			try:
 				self.x = XDisplay()
 			except OSError as error:
-				log(f'not moving the cursor off X windows: {error}')
+				log(f'not moving the cursor off X windows or skipping presses Wine already got: {error}')
 			else:
-				self.watcher = asyncio.create_task(self.watch_pointer())
+				if self.options.cursor_poll > 0:
+					self.watcher = asyncio.create_task(self.watch_pointer())
 
 	async def stop(self):
 		self.scanner.cancel()
 		if self.watcher:
 			self.watcher.cancel()
-			self.x.close()
 		for reader in self.readers.values():
 			reader.cancel()
 		self.readers.clear()
+		if self.x:
+			self.x.close()
 		if self.helper and self.helper.returncode is None:
 			self.helper.stdin.close()
 			try:
@@ -338,7 +359,6 @@ class Session:
 
 	async def watch_pointer(self):
 		loop = asyncio.get_running_loop()
-		owner_class = self.options.process_name.lower()
 		parked = None
 		parked_window = None
 		checked = 0
@@ -358,7 +378,7 @@ class Session:
 			elif moved or buttons & BUTTON_MASKS or (window and self.x.takes_pointer(window)):
 				continue
 
-			areas = self.x.input_areas(owner_class)
+			areas = self.x.input_areas(self.owner_class)
 			# Only Tappo hit-tests the spot Wine remembers, so a stale one over another app or over nothing is left alone.
 			if not owned_under(position, areas):
 				continue
@@ -385,27 +405,51 @@ class Session:
 			device.close()
 			self.readers.pop(path, None)
 
-	def stand_in_for(self, code):
+	def stand_ins_for(self, code):
 		if code in MOUSE_BUTTONS:
 			if self.options.mouse_hand == 'off':
 				return None
-			return (*STAND_INS[self.options.mouse_hand], 0)
+			hand = self.options.mouse_hand
+			return STAND_INS[hand] + STAND_INS[OTHER_HAND[hand]]
 		if self.options.real_keys:
 			if code in EXTENDED_SCAN_CODES:
-				return 0, EXTENDED_SCAN_CODES[code], 1
-			return (0, code, 0) if code <= ecodes.KEY_F12 else None
+				return [(0, EXTENDED_SCAN_CODES[code], 1)]
+			return [(0, code, 0)] if code <= ecodes.KEY_F12 else None
 		if code > ecodes.KEY_MICMUTE:
 			return None
 		if code == ecodes.KEY_SPACE:
-			hand = 'left' if self.last_hand == 'right' else 'right'
+			hand = OTHER_HAND[self.last_hand]
 		else:
 			hand = 'left' if code in LEFT_HAND_KEYS else 'right'
 		self.last_hand = hand
-		return (*STAND_INS[hand], 0)
+		return STAND_INS[hand] + STAND_INS[OTHER_HAND[hand]]
+
+	async def reaches_wine(self, code):
+		if not self.x or self.options.direct_wait <= 0:
+			return False
+		window = self.x.pointer()[1] if code in MOUSE_BUTTONS else self.x.focus()
+		if self.x.window_class(window) != self.owner_class:
+			return False
+		# X keeps no state for the side buttons, so for those the window under the pointer has to do.
+		if code in MOUSE_BUTTONS and code not in BUTTON_STATE:
+			return True
+		# Only Xwayland knows whether it has Wayland's focus, so the press counts as Wine's once X holds it, a few ms after evdev.
+		loop = asyncio.get_running_loop()
+		deadline = loop.time() + self.options.direct_wait
+		while not self.x.holds(code):
+			if loop.time() >= deadline:
+				return False
+			await asyncio.sleep(0.002)
+		return True
 
 	async def forward(self, code, down):
 		if down:
-			stand_in = self.stand_in_for(code)
+			candidates = self.stand_ins_for(code)
+			# Wine passes a press that X gave one of Tappo's windows straight to its hooks, so a stand-in would count it twice.
+			if not candidates or await self.reaches_wine(code):
+				return
+			held = set(self.pressed.values())
+			stand_in = next((key for key in candidates if key not in held), None)
 			if not stand_in:
 				return
 			self.pressed[code] = stand_in
@@ -505,6 +549,11 @@ def parse_options():
 		'--cursor-recheck', type=float, default=1.0,
 		help='seconds between looks for a window that has opened over the moved cursor, which Xwayland does not report; '
 		'0 never looks',
+	)
+	parser.add_argument(
+		'--direct-wait', type=float, default=0.05,
+		help='seconds to wait for X to report a press made while one of the app\'s windows has the X keyboard focus or the pointer; '
+		'X reporting it means Wine got the press itself, so no stand-in is sent; 0 always sends one',
 	)
 	parser.add_argument('--poll', type=float, default=2.0, help='seconds between checks for the app')
 	parser.add_argument(
