@@ -28,13 +28,18 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 
 ## Requirements
 
-- KDE Plasma 6 on Wayland, ideally (see above). I'm on Arch with Plasma 6.8, so that's what it's tested on.
+- KDE Plasma 6 on Wayland, ideally (see above). Tested on Arch (Plasma 6.8) and Fedora.
 - Tested on an NVIDIA card only. AMD and Intel should behave the same, but I haven't been able to check, so the transparency in particular is unproven there.
-- Arch, or something that can run Arch's Wine package. The Wine patches only fit one exact build (see [Wine version](#wine-version)), so the installer downloads that build from the Arch Linux Archive instead of using yours.
+- Arch, Fedora, or something that can run Arch's Wine package. The Wine patches only fit one exact build (see [Wine version](#wine-version)), so the installer downloads that build from the Arch Linux Archive instead of using yours.
 - A few packages:
-  ```
-  sudo pacman -S --needed wine python-evdev base-devel curl zstd
-  ```
+  - On Arch:
+    ```
+    sudo pacman -S --needed wine python-evdev base-devel curl zstd
+    ```
+  - On Fedora:
+    ```
+    sudo dnf install wine python3-evdev gcc make curl zstd
+    ```
   `wine` is only there for the libraries the downloaded Wine needs.
 - Your user in the `input` group, so the bridge can read your keyboards and mice. That lets every program you run read your keyboards too, so think about it on a shared machine.
 
@@ -60,7 +65,7 @@ Steps that are already done get skipped, so if something goes wrong halfway, fix
 
 Besides the prefix, it installs the `ole32` fix, the bridge as a user service, a menu entry and a logout script. The logout script quits Tappo properly when you log out, restart or shut down from Plasma, the way Windows would, instead of leaving it to get killed, so your pet's state gets saved. It's listed under Logout Scripts on the Autostart page in System Settings, and `runtime/tappo-quit` does the same thing by hand.
 
-If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from it, since the effect draws an outline round Tappo's panels.
+If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from it, since the effect draws an outline round Tappo's panels. It also sets up a KWin window rule to hide Tappo from your taskbar, pager and Alt+Tab switcher so it doesn't clutter or flash on your panel.
 
 ### By hand
 
@@ -78,7 +83,7 @@ make install
 - `make prefix` creates the Wine prefix and sets it up for 32-bit windows. For a prefix other than `~/Games/wuwa-tappo`, pass `WINEPREFIX=/some/path` to every `make` command.
 - `make webview2` and `make app` run the two installers. The WebView2 one is the **Evergreen Standalone Installer (x64)** from Microsoft's [WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/).
 - `make install` does the rest. Run it after `make app`, because the menu entry borrows the icon Wine pulled out of the installer. Each part of it is also its own target (`ole32`, `service`, `launcher`, `logout-script`).
-- `make autostart` and `make corners-exclusion` are the optional extras.
+- `make autostart`, `make corners-exclusion` and `make kwin-rules` are the optional extras.
 
 ### Updating
 
@@ -137,7 +142,7 @@ Help is very welcome, whether that's a bug report, a test on a setup I don't hav
 
 - Other desktops. Everything but the logout script should work outside Plasma, and the logout script needs an equivalent there.
 - AMD and Intel graphics.
-- Distros other than Arch, as long as they can run Arch's Wine package.
+- Distros other than Arch and Fedora, as long as they can run Arch's Wine package.
 - Newer Wine. Each new build means finding the patch sites again, and getting the fixes into Wine itself would make most of this repo unnecessary.
 
 If something breaks, open an issue with what you ran and what happened. Tappo logs to `drive_c/users/<you>/AppData/Local/com.kuro.wuwatappo.global/logs` in the prefix, and `journalctl --user -u tappo-bridge` shows the bridge.
