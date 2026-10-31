@@ -17,7 +17,7 @@ LOGOUT_SCRIPTS := $(HOME)/.config/plasma-workspace/shutdown
 ICONS := $(HOME)/.local/share/icons/hicolor
 WINE_ICON ?= $(firstword $(wildcard $(ICONS)/256x256/apps/*_WuwaTappo.0.png))
 
-.PHONY: all runtime prefix webview2 app ole32 service corners-exclusion kwin-rules launcher autostart logout-script install uninstall clean
+.PHONY: all runtime prefix webview2 app ole32 service corners-exclusion launcher autostart logout-script install uninstall clean
 
 all: build/tappo-input.exe.so
 
@@ -77,29 +77,6 @@ corners-exclusion:
 	qdbus=qdbus6; command -v "$$qdbus" > /dev/null || qdbus=qdbus-qt6; command -v "$$qdbus" > /dev/null || qdbus=qdbus; \
 	"$$qdbus" org.kde.KWin /Effects org.kde.kwin.Effects.reconfigureEffect kwin4_effect_shapecorners 2> /dev/null || true
 
-kwin-rules:
-	rules="$$(kreadconfig6 --file kwinrulesrc --group General --key rules 2> /dev/null)"; \
-	case ",$$rules," in \
-		*,wuwa-tappo,*) ;; \
-		*) \
-			count="$$(kreadconfig6 --file kwinrulesrc --group General --key count --default 0 2> /dev/null)"; \
-			kwriteconfig6 --file kwinrulesrc --group General --key count "$$((count + 1))"; \
-			kwriteconfig6 --file kwinrulesrc --group General --key rules "$${rules:+$$rules,}wuwa-tappo"; \
-			;; \
-	esac; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key Description "Wuwa Tappo"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key wmclass "wuwatappo.exe"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key wmclassmatch "1"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key wmclasscomplete --type bool "false"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key skiptaskbar --type bool "true"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key skiptaskbarrule "2"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key skippager --type bool "true"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key skippagerrule "2"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key skipswitcher --type bool "true"; \
-	kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key skipswitcherrule "2"; \
-	qdbus=qdbus6; command -v "$$qdbus" > /dev/null || qdbus=qdbus-qt6; command -v "$$qdbus" > /dev/null || qdbus=qdbus; \
-	"$$qdbus" org.kde.KWin /KWin org.kde.KWin.reconfigure 2> /dev/null || true
-
 launcher: $(RUNTIME_STAMP)
 	mkdir -p "$(APPLICATIONS)"
 	sed -e 's|@PROJECT@|$(CURDIR)|' -e 's|@WINEPREFIX@|$(WINEPREFIX)|' runtime/wuwa-tappo.desktop.in > "$(APPLICATIONS)/wuwa-tappo.desktop"
@@ -125,20 +102,6 @@ uninstall:
 	rm -f "$(UNIT_DIR)/tappo-bridge.service" "$(APPLICATIONS)/wuwa-tappo.desktop" "$(AUTOSTART)/wuwa-tappo.desktop" "$(LOGOUT_SCRIPTS)/00-wuwa-tappo-quit" "$(ICONS)/256x256/apps/wuwa-tappo.png"
 	rm -f "$(ICONS)"/*/apps/*_WuwaTappo.0.png "$(HOME)/.config/menus/applications-merged/wine-Programs-WuwaTappoGlobal-Wuwa Tappo.menu" "$(HOME)/.local/share/desktop-directories/wine-Programs-WuwaTappoGlobal.directory"
 	rm -rf "$(APPLICATIONS)/wine/Programs/WuwaTappoGlobal"
-	rules="$$(kreadconfig6 --file kwinrulesrc --group General --key rules 2> /dev/null)"; \
-	case ",$$rules," in \
-		*,wuwa-tappo,*) \
-			new_rules="$$(printf '%s\n' "$$rules" | sed -E -e 's/(^|,)wuwa-tappo(,|$$)/\1/' -e 's/^,//' -e 's/,$$//')"; \
-			count="$$(kreadconfig6 --file kwinrulesrc --group General --key count --default 1 2> /dev/null)"; \
-			kwriteconfig6 --file kwinrulesrc --group General --key count "$$((count > 0 ? count - 1 : 0))"; \
-			kwriteconfig6 --file kwinrulesrc --group General --key rules "$$new_rules"; \
-			for key in Description wmclass wmclassmatch wmclasscomplete skiptaskbar skiptaskbarrule skippager skippagerrule skipswitcher skipswitcherrule; do \
-				kwriteconfig6 --file kwinrulesrc --group wuwa-tappo --key "$$key" --delete 2> /dev/null || true; \
-			done; \
-			qdbus=qdbus6; command -v "$$qdbus" > /dev/null || qdbus=qdbus-qt6; command -v "$$qdbus" > /dev/null || qdbus=qdbus; \
-			"$$qdbus" org.kde.KWin /KWin org.kde.KWin.reconfigure 2> /dev/null || true; \
-			;; \
-	esac
 	systemctl --user daemon-reload
 	update-desktop-database "$(APPLICATIONS)"
 	! command -v kbuildsycoca6 > /dev/null || kbuildsycoca6 2> /dev/null

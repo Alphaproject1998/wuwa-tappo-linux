@@ -11,7 +11,7 @@ uninstall=false
 tappo_installed_now=false
 
 arch_packages=(wine python-evdev base-devel curl zstd)
-fedora_packages=(wine python3-evdev gcc make curl zstd)
+fedora_packages=(wine python3-evdev gcc gcc-c++ make curl zstd)
 webview2_url='https://go.microsoft.com/fwlink/?linkid=2124701'
 tappo_page='https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/en/'
 tappo_activity_config='https://api-wutheringwaves-wuwatappo.kurogames-global.com/api/common/activity-config'
@@ -82,6 +82,8 @@ download() {
 	local url=$1 destination=$2
 	[ -s "$destination" ] && return
 	mkdir -p "$(dirname "$destination")"
+	# The WebView2 installer keeps one name across versions, so a .part from an earlier run could be a different file.
+	rm -f "$destination.part"
 	curl -fL -C - --retry 5 --retry-all-errors --retry-delay 2 -o "$destination.part" "$url"
 	mv "$destination.part" "$destination"
 }
@@ -129,7 +131,7 @@ check_packages() {
 	elif command -v dnf5 > /dev/null || command -v dnf > /dev/null; then
 		local dnf_cmd="dnf"
 		command -v dnf5 > /dev/null && dnf_cmd="dnf5"
-		local missing=()
+		local missing=() pkg
 		for pkg in "${fedora_packages[@]}"; do
 			if [ "$pkg" = "wine" ]; then
 				if ! rpm -q wine > /dev/null 2>&1 && ! rpm -q wine-core > /dev/null 2>&1; then
@@ -252,15 +254,6 @@ set_up_corners_exclusion() {
 	run_make corners-exclusion
 }
 
-set_up_kwin_rules() {
-	command -v kwriteconfig6 > /dev/null || return 0
-	case ",$(kreadconfig6 --file kwinrulesrc --group General --key rules 2> /dev/null)," in
-		*,wuwa-tappo,*) return ;;
-	esac
-	ask "Hide Tappo from the taskbar, pager and window switcher?" y || return 0
-	run_make kwin-rules
-}
-
 uninstall_everything() {
 	wait_for_tappo_to_quit
 	say "Removing the bridge, menu entry, autostart entry and logout script"
@@ -340,7 +333,6 @@ run_make install
 cmp -s build/ole32.dll "$prefix/drive_c/windows/system32/ole32.dll" || die "the ole32 fix didn't stick in $prefix/drive_c/windows/system32"
 set_up_autostart
 set_up_corners_exclusion
-set_up_kwin_rules
 
 say "All done"
 if ask "Start Wuwa Tappo now?" y; then

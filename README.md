@@ -38,7 +38,7 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
     ```
   - On Fedora:
     ```
-    sudo dnf install wine python3-evdev gcc make curl zstd
+    sudo dnf install wine python3-evdev gcc gcc-c++ make curl zstd
     ```
   `wine` is only there for the libraries the downloaded Wine needs.
 - Your user in the `input` group, so the bridge can read your keyboards and mice. That lets every program you run read your keyboards too, so think about it on a shared machine.
@@ -65,7 +65,9 @@ Steps that are already done get skipped, so if something goes wrong halfway, fix
 
 Besides the prefix, it installs the `ole32` fix, the bridge as a user service, a menu entry and a logout script. The logout script quits Tappo properly when you log out, restart or shut down from Plasma, the way Windows would, instead of leaving it to get killed, so your pet's state gets saved. It's listed under Logout Scripts on the Autostart page in System Settings, and `runtime/tappo-quit` does the same thing by hand.
 
-If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from it, since the effect draws an outline round Tappo's panels. It also sets up a KWin window rule to hide Tappo from your taskbar, pager and Alt+Tab switcher so it doesn't clutter or flash on your panel.
+If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from it, since the effect draws an outline round Tappo's panels.
+
+To keep Tappo off your taskbar, pager and Alt+Tab, switch off Show Taskbar Icon in its settings. You can switch it back on whenever you need it for OBS capture.
 
 If you're using any force blur KWin effects, like `kwin-effects-force-blur`, make sure to add an exclusion for the class `wuwatappo.exe` otherwise a blur will cover your entire screen
 
@@ -85,7 +87,7 @@ make install
 - `make prefix` creates the Wine prefix and sets it up for 32-bit windows. For a prefix other than `~/Games/wuwa-tappo`, pass `WINEPREFIX=/some/path` to every `make` command.
 - `make webview2` and `make app` run the two installers. The WebView2 one is the **Evergreen Standalone Installer (x64)** from Microsoft's [WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/).
 - `make install` does the rest. Run it after `make app`, because the menu entry borrows the icon Wine pulled out of the installer. Each part of it is also its own target (`ole32`, `service`, `launcher`, `logout-script`).
-- `make autostart`, `make corners-exclusion` and `make kwin-rules` are the optional extras.
+- `make autostart` and `make corners-exclusion` are the optional extras.
 
 ### Updating
 
@@ -137,6 +139,7 @@ What's left is mostly WebView2's seven renderers, one per window including the f
 - Inside Tappo's panels, the hand and text cursors show as the normal arrow. The panels are WebView2, which runs as its own process, and Wine can't apply a cursor that belongs to another process.
 - While your pointer is over other apps, Tappo sees the cursor parked just clear of the X windows, not where it really is.
 - The pet's state can reset when Tappo is killed rather than quit. Quitting from the tray or logging out of Plasma keeps it, but a shutdown that skips Plasma, such as `systemctl poweroff` from a terminal, still kills it.
+- Kuro's login page doesn't like ad blockers or any other filtering. If signing in fails, open the login link in a clean browser with no extensions. Thanks to timurinal for finding that one.
 
 ## Contributing
 
