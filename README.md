@@ -28,8 +28,8 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 
 ## Requirements
 
-- KDE Plasma 6 on Wayland, ideally (see above). Tested on Arch (Plasma 6.8) and Fedora.
-- Tested on an NVIDIA card only. AMD and Intel should behave the same, but I haven't been able to check, so the transparency in particular is unproven there.
+- KDE Plasma 6 on Wayland, ideally (see above). Tested on Arch (Plasma 6.8) and Fedora (Plasma 6.7).
+- Tested on an NVIDIA and AMD GPU. Intel should behave the same - the transparency in particular is unproven there.
 - Arch, Fedora, or something that can run Arch's Wine package. The Wine patches only fit one exact build (see [Wine version](#wine-version)), so the installer downloads that build from the Arch Linux Archive instead of using yours.
 - A few packages:
   - On Arch:
@@ -66,6 +66,8 @@ Steps that are already done get skipped, so if something goes wrong halfway, fix
 Besides the prefix, it installs the `ole32` fix, the bridge as a user service, a menu entry and a logout script. The logout script quits Tappo properly when you log out, restart or shut down from Plasma, the way Windows would, instead of leaving it to get killed, so your pet's state gets saved. It's listed under Logout Scripts on the Autostart page in System Settings, and `runtime/tappo-quit` does the same thing by hand.
 
 If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from it, since the effect draws an outline round Tappo's panels. It also sets up a KWin window rule to hide Tappo from your taskbar, pager and Alt+Tab switcher so it doesn't clutter or flash on your panel.
+
+If you're using any force blur KWin effects, like `kwin-effects-force-blur`, make sure to add an exclusion for the class `wuwatappo.exe` otherwise a blur will cover your entire screen
 
 ### By hand
 
@@ -141,7 +143,7 @@ What's left is mostly WebView2's seven renderers, one per window including the f
 Help is very welcome, whether that's a bug report, a test on a setup I don't have or a PR. The things I can't check myself:
 
 - Other desktops. Everything but the logout script should work outside Plasma, and the logout script needs an equivalent there.
-- AMD and Intel graphics.
+- Intel graphics.
 - Distros other than Arch and Fedora, as long as they can run Arch's Wine package.
 - Newer Wine. Each new build means finding the patch sites again, and getting the fixes into Wine itself would make most of this repo unnecessary.
 
