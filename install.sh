@@ -10,7 +10,8 @@ assume_yes=false
 uninstall=false
 tappo_installed_now=false
 
-packages=(wine python-evdev base-devel curl zstd)
+arch_packages=(wine python-evdev base-devel curl zstd)
+fedora_packages=(wine python3-evdev gcc make curl zstd)
 webview2_url='https://go.microsoft.com/fwlink/?linkid=2124701'
 tappo_page='https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/en/'
 tappo_activity_config='https://api-wutheringwaves-wuwatappo.kurogames-global.com/api/common/activity-config'
@@ -81,7 +82,7 @@ download() {
 	local url=$1 destination=$2
 	[ -s "$destination" ] && return
 	mkdir -p "$(dirname "$destination")"
-	curl -fL --retry 2 -o "$destination.part" "$url"
+	curl -fL -C - --retry 5 --retry-all-errors --retry-delay 2 -o "$destination.part" "$url"
 	mv "$destination.part" "$destination"
 }
 
@@ -118,16 +119,33 @@ downloaded_tappo_installer() {
 }
 
 check_packages() {
-	if ! command -v pacman > /dev/null; then
-		warn "no pacman here, so packages aren't checked; you need Wine's libraries, python-evdev, gcc, make, curl and zstd"
-		return
+	if command -v pacman > /dev/null; then
+		local missing=()
+		mapfile -t missing < <(pacman -T "${arch_packages[@]}" || true)
+		[ ${#missing[@]} -gt 0 ] || return 0
+		say "Missing packages: ${missing[*]}"
+		ask "Install them with sudo pacman?" y || die "install them, then run this again"
+		sudo pacman -S --needed "${missing[@]}"
+	elif command -v dnf5 > /dev/null || command -v dnf > /dev/null; then
+		local dnf_cmd="dnf"
+		command -v dnf5 > /dev/null && dnf_cmd="dnf5"
+		local missing=()
+		for pkg in "${fedora_packages[@]}"; do
+			if [ "$pkg" = "wine" ]; then
+				if ! rpm -q wine > /dev/null 2>&1 && ! rpm -q wine-core > /dev/null 2>&1; then
+					missing+=("wine")
+				fi
+			elif ! rpm -q "$pkg" > /dev/null 2>&1; then
+				missing+=("$pkg")
+			fi
+		done
+		[ ${#missing[@]} -gt 0 ] || return 0
+		say "Missing packages: ${missing[*]}"
+		ask "Install them with sudo $dnf_cmd?" y || die "install them, then run this again"
+		sudo "$dnf_cmd" install "${missing[@]}"
+	else
+		warn "neither pacman nor dnf found, so packages aren't checked; you need Wine's libraries, python-evdev, gcc, make, curl and zstd"
 	fi
-	local missing=()
-	mapfile -t missing < <(pacman -T "${packages[@]}" || true)
-	[ ${#missing[@]} -gt 0 ] || return 0
-	say "Missing packages: ${missing[*]}"
-	ask "Install them with sudo pacman?" y || die "install them, then run this again"
-	sudo pacman -S --needed "${missing[@]}"
 }
 
 check_input_group() {
@@ -218,13 +236,29 @@ set_up_autostart() {
 }
 
 set_up_corners_exclusion() {
-	command -v qdbus6 > /dev/null || return 0
-	[ "$(qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.isEffectLoaded kwin4_effect_shapecorners 2> /dev/null)" = true ] || return 0
-	case ",$(kreadconfig6 --file kwinrc --group Round-Corners --key Exclusions)," in
+	local qdbus=
+	for cmd in qdbus6 qdbus-qt6 qdbus; do
+		if command -v "$cmd" > /dev/null; then
+			qdbus="$cmd"
+			break
+		fi
+	done
+	[ -n "$qdbus" ] || return 0
+	[ "$("$qdbus" org.kde.KWin /Effects org.kde.kwin.Effects.isEffectLoaded kwin4_effect_shapecorners 2> /dev/null)" = true ] || return 0
+	case ",$(kreadconfig6 --file kwinrc --group Round-Corners --key Exclusions 2> /dev/null)," in
 		*,wuwatappo.exe,*) return ;;
 	esac
 	ask "Rounded Corners is on, and it draws an outline round Tappo's panels. Exclude Tappo from it?" y || return 0
 	run_make corners-exclusion
+}
+
+set_up_kwin_rules() {
+	command -v kwriteconfig6 > /dev/null || return 0
+	case ",$(kreadconfig6 --file kwinrulesrc --group General --key rules 2> /dev/null)," in
+		*,wuwa-tappo,*) return ;;
+	esac
+	ask "Hide Tappo from the taskbar, pager and window switcher?" y || return 0
+	run_make kwin-rules
 }
 
 uninstall_everything() {
@@ -306,6 +340,7 @@ run_make install
 cmp -s build/ole32.dll "$prefix/drive_c/windows/system32/ole32.dll" || die "the ole32 fix didn't stick in $prefix/drive_c/windows/system32"
 set_up_autostart
 set_up_corners_exclusion
+set_up_kwin_rules
 
 say "All done"
 if ask "Start Wuwa Tappo now?" y; then
