@@ -2,7 +2,9 @@
 import argparse
 import asyncio
 import ctypes
+import json
 import os
+import string
 import signal
 import sys
 from pathlib import Path
@@ -32,6 +34,35 @@ STAND_INS = {
 	'right': [(0x7d, 0x65, 0), (0x7f, 0x67, 0), (0x81, 0x69, 0), (0x83, 0x6b, 0), (0x85, 0x6d, 0), (0x87, 0x76, 0)],
 }
 OTHER_HAND = {'left': 'right', 'right': 'left'}
+STAND_IN_SCAN_CODES = {vk: scan for keys in STAND_INS.values() for vk, scan, _ in keys}
+
+FUNCTION_KEYS = [
+	ecodes.KEY_F1, ecodes.KEY_F2, ecodes.KEY_F3, ecodes.KEY_F4, ecodes.KEY_F5, ecodes.KEY_F6,
+	ecodes.KEY_F7, ecodes.KEY_F8, ecodes.KEY_F9, ecodes.KEY_F10, ecodes.KEY_F11, ecodes.KEY_F12,
+	ecodes.KEY_F13, ecodes.KEY_F14, ecodes.KEY_F15, ecodes.KEY_F16, ecodes.KEY_F17, ecodes.KEY_F18,
+	ecodes.KEY_F19, ecodes.KEY_F20, ecodes.KEY_F21, ecodes.KEY_F22, ecodes.KEY_F23, ecodes.KEY_F24,
+]
+
+# Every key Tappo's shortcut recorder accepts, as the virtual key it saves; it reads the physical key, so the US layout holds.
+SHORTCUT_KEYS = {
+	**{code: 0x70 + index for index, code in enumerate(FUNCTION_KEYS)},
+	**{getattr(ecodes, f'KEY_{name}'): ord(name) for name in string.ascii_uppercase + string.digits},
+	ecodes.KEY_SPACE: 0x20, ecodes.KEY_PAGEUP: 0x21, ecodes.KEY_PAGEDOWN: 0x22, ecodes.KEY_END: 0x23,
+	ecodes.KEY_HOME: 0x24, ecodes.KEY_LEFT: 0x25, ecodes.KEY_UP: 0x26, ecodes.KEY_RIGHT: 0x27, ecodes.KEY_DOWN: 0x28,
+	ecodes.KEY_INSERT: 0x2d, ecodes.KEY_DELETE: 0x2e, ecodes.KEY_SEMICOLON: 0xba, ecodes.KEY_EQUAL: 0xbb,
+	ecodes.KEY_COMMA: 0xbc, ecodes.KEY_MINUS: 0xbd, ecodes.KEY_DOT: 0xbe, ecodes.KEY_SLASH: 0xbf,
+	ecodes.KEY_GRAVE: 0xc0, ecodes.KEY_LEFTBRACE: 0xdb, ecodes.KEY_BACKSLASH: 0xdc, ecodes.KEY_RIGHTBRACE: 0xdd,
+	ecodes.KEY_APOSTROPHE: 0xde,
+}
+
+MODIFIER_BITS = {
+	ecodes.KEY_LEFTALT: 1, ecodes.KEY_RIGHTALT: 1, ecodes.KEY_LEFTCTRL: 2, ecodes.KEY_RIGHTCTRL: 2,
+	ecodes.KEY_LEFTSHIFT: 4, ecodes.KEY_RIGHTSHIFT: 4, ecodes.KEY_LEFTMETA: 8, ecodes.KEY_RIGHTMETA: 8,
+}
+MODIFIER_KEYS = {1: (0xa4, 0x38, 0), 2: (0xa2, 0x1d, 0), 4: (0xa0, 0x2a, 0), 8: (0x5b, 0x5b, 1)}
+
+SHORTCUT_NAMES = ('gameMode', 'switchScreen', 'togglePet')
+DEFAULT_SHORTCUTS = {(0, 0x76), (0, 0x77), (0, 0x78)}
 
 # Up to KEY_F12 an evdev code is its PC set 1 scan code; these need the E0 prefix instead.
 EXTENDED_SCAN_CODES = {
@@ -111,6 +142,53 @@ def find_app(process_name, prefix):
 			continue
 		return int(entry.name), app_prefix
 	return None
+
+
+def scan_code(code):
+	if code in EXTENDED_SCAN_CODES:
+		return EXTENDED_SCAN_CODES[code], 1
+	if code <= ecodes.KEY_F12:
+		return code, 0
+	return STAND_IN_SCAN_CODES.get(SHORTCUT_KEYS.get(code), 0), 0
+
+
+class Shortcuts:
+	def __init__(self, prefix):
+		self.prefix = Path(prefix)
+		self.path = None
+		self.stamp = None
+		self.bindings = DEFAULT_SHORTCUTS
+
+	def current(self):
+		if not self.path:
+			found = sorted(self.prefix.glob('drive_c/users/*/AppData/Roaming/com.kuro.wuwatappo*'))
+			if not found:
+				return DEFAULT_SHORTCUTS
+			self.path = found[0] / 'shortcuts.json'
+		try:
+			stamp = self.path.stat().st_mtime_ns
+		except OSError:
+			return DEFAULT_SHORTCUTS
+		if stamp == self.stamp:
+			return self.bindings
+		self.stamp = stamp
+		try:
+			saved = json.loads(self.path.read_text())
+			bindings = {
+				(saved[name]['modifiers'], saved[name]['key'])
+				for name in SHORTCUT_NAMES if name in saved and saved[name]['key']
+			}
+		except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+			log(f'could not read {self.path}, keeping the shortcuts read before: {error}')
+			return self.bindings
+		# Tappo writes this file, so it decides which keys come through for real.
+		# Only its three shortcuts count, and a key with no modifiers only if it's an F-key, or a binding could time your typing.
+		typing = {binding for binding in bindings if not binding[0] and not 0x70 <= binding[1] <= 0x87}
+		if typing:
+			log(f'sending stand-ins for {sorted(typing)}: a shortcut with no modifiers has to be an F-key')
+		self.bindings = bindings - typing
+		log(f'shortcuts: {sorted(self.bindings)}')
+		return self.bindings
 
 
 def wanted_device(device, ignore):
@@ -295,6 +373,8 @@ class Session:
 		self.helper = None
 		self.readers = {}
 		self.pressed = {}
+		self.held = set()
+		self.shortcuts = Shortcuts(prefix)
 		self.last_hand = 'right'
 		self.x = None
 		self.watcher = None
@@ -424,42 +504,80 @@ class Session:
 		self.last_hand = hand
 		return STAND_INS[hand] + STAND_INS[OTHER_HAND[hand]]
 
-	async def reaches_wine(self, code):
+	async def landing(self, code):
 		if not self.x or self.options.direct_wait <= 0:
-			return False
+			return 'elsewhere'
 		window = self.x.pointer()[1] if code in MOUSE_BUTTONS else self.x.focus()
 		if self.x.window_class(window) != self.owner_class:
-			return False
+			return 'elsewhere'
 		# X keeps no state for the side buttons, so for those the window under the pointer has to do.
 		if code in MOUSE_BUTTONS and code not in BUTTON_STATE:
-			return True
+			return 'wine'
 		# Only Xwayland knows whether it has Wayland's focus, so the press counts as Wine's once X holds it, a few ms after evdev.
 		loop = asyncio.get_running_loop()
 		deadline = loop.time() + self.options.direct_wait
 		while not self.x.holds(code):
 			if loop.time() >= deadline:
-				return False
+				return 'missed'
 			await asyncio.sleep(0.002)
-		return True
+		return 'wine'
 
 	async def forward(self, code, down):
-		if down:
-			candidates = self.stand_ins_for(code)
-			# Wine passes a press that X gave one of Tappo's windows straight to its hooks, so a stand-in would count it twice.
-			if not candidates or await self.reaches_wine(code):
+		if not down:
+			self.held.discard(code)
+			sent = self.pressed.pop(code, None)
+			if not sent:
 				return
-			held = set(self.pressed.values())
-			stand_in = next((key for key in candidates if key not in held), None)
-			if not stand_in:
-				return
-			self.pressed[code] = stand_in
-		else:
-			stand_in = self.pressed.pop(code, None)
-			if not stand_in:
-				return
+			key, hardware, modifiers = sent
+			await self.send_key(key, False, hardware)
+			for modifier in reversed(modifiers):
+				await self.send_key(modifier, False, True)
+			return
 
-		vk, scan, extended = stand_in
-		await self.send(f'key {vk:x} {scan:x} {extended} {int(down)}')
+		modifiers = 0
+		for held in self.held:
+			modifiers |= MODIFIER_BITS.get(held, 0)
+		self.held.add(code)
+
+		landing = await self.landing(code)
+		# Wine passes a press that X gave one of Tappo's windows straight to its hooks, so a stand-in would count it twice.
+		if landing == 'wine':
+			return
+
+		shortcuts = self.shortcuts.current()
+		vk = SHORTCUT_KEYS.get(code)
+		is_shortcut = vk and not self.options.no_shortcuts and (modifiers, vk) in shortcuts
+		# Tappo has the keyboard but the compositor kept the key for a shortcut of its own, so the shortcut recorder would only see a stand-in.
+		kept_from_tappo = landing == 'missed' and code in FUNCTION_KEYS
+		if is_shortcut or kept_from_tappo:
+			# The server matches RegisterHotKey on its own key state, so the modifiers have to be pressed in Wine too.
+			# They stay down until the key is let go: a lone Alt or Win release would open the stale window's system menu.
+			needed = []
+			if is_shortcut and landing == 'elsewhere' and not self.options.real_keys:
+				needed = [key for bit, key in MODIFIER_KEYS.items() if modifiers & bit]
+			key = (vk, *scan_code(code))
+			for modifier in needed:
+				await self.send_key(modifier, True, True)
+			# Tappo catches F12, which Windows won't register, with a hook that skips injected keys.
+			await self.send_key(key, True, True)
+			self.pressed[code] = (key, True, needed)
+			return
+
+		candidates = self.stand_ins_for(code)
+		if not candidates:
+			return
+		# A stand-in that is also a shortcut would fire it on every tap.
+		bound = {key for _, key in shortcuts}
+		taken = {sent[0] for sent in self.pressed.values()}
+		stand_in = next((key for key in candidates if key not in taken and key[0] not in bound), None)
+		if not stand_in:
+			return
+		self.pressed[code] = (stand_in, False, [])
+		await self.send_key(stand_in, True)
+
+	async def send_key(self, key, down, hardware=False):
+		vk, scan, extended = key
+		await self.send(f'key {vk:x} {scan:x} {extended} {int(down)}{" hw" if hardware else ""}')
 
 	async def send(self, command):
 		if self.helper.returncode is not None:
@@ -527,6 +645,11 @@ def parse_options():
 		'--real-keys', action='store_true',
 		help='send the real keys instead of a left/right stand-in; '
 		'the app then sees everything typed, and Wine also delivers them to the last Tappo window it focused',
+	)
+	parser.add_argument(
+		'--no-shortcuts', action='store_true',
+		help='send stand-ins for the app\'s own shortcuts too (read from its shortcuts.json), '
+		'which then only work while one of its windows has the keyboard',
 	)
 	parser.add_argument(
 		'--ignore', action='append', default=None, metavar='NAME',

@@ -10,7 +10,7 @@
 static BOOL verbose;
 static BOOL hardware;
 
-static void send_key(WORD vk, WORD scan, BOOL extended, BOOL down)
+static void send_key(WORD vk, WORD scan, BOOL extended, BOOL down, BOOL as_hardware)
 {
 	INPUT input = {0};
 	BOOL sent;
@@ -24,12 +24,12 @@ static void send_key(WORD vk, WORD scan, BOOL extended, BOOL down)
 	input.ki.time = GetTickCount();
 
 	// Declared BOOL, but it passes back send_hardware_message's NTSTATUS, so zero is success.
-	sent = hardware ? !NtUserSendHardwareInput(NULL, 0, &input, 0) : SendInput(1, &input, sizeof(input)) == 1;
+	sent = as_hardware ? !NtUserSendHardwareInput(NULL, 0, &input, 0) : SendInput(1, &input, sizeof(input)) == 1;
 	if (!sent) {
 		fprintf(stderr, "sending vk %#x failed\n", vk);
 		return;
 	}
-	if (verbose) fprintf(stderr, "key vk=%#x scan=%#x ext=%d down=%d\n", vk, scan, extended, down);
+	if (verbose) fprintf(stderr, "key vk=%#x scan=%#x ext=%d down=%d hw=%d\n", vk, scan, extended, down, as_hardware);
 }
 
 static void move_cursor(int root_x, int root_y)
@@ -49,10 +49,11 @@ static void move_cursor(int root_x, int root_y)
 static void handle_line(char *line)
 {
 	unsigned int vk, scan, extended, down;
+	char mode[8] = "";
 	int x, y;
 
-	if (sscanf(line, "key %x %x %u %u", &vk, &scan, &extended, &down) == 4) {
-		send_key((WORD)vk, (WORD)scan, extended != 0, down != 0);
+	if (sscanf(line, "key %x %x %u %u %7s", &vk, &scan, &extended, &down, mode) >= 4) {
+		send_key((WORD)vk, (WORD)scan, extended != 0, down != 0, hardware || !strcmp(mode, "hw"));
 		return;
 	}
 	if (sscanf(line, "move %d %d", &x, &y) == 2) {

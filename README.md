@@ -106,7 +106,9 @@ While Tappo runs, the bridge reads every keyboard and mouse, but what it passes 
 
 The stand-ins also mean Tappo can't keylog you. On Windows its keyboard hook sees every key you press in every app; here all it ever gets from the bridge is that some key went down on one side of the keyboard, so even if it wanted to record what you type, there's nothing to record. The only real keys it sees are the ones you type into its own windows.
 
-It also watches the pointer through its own connection to Xwayland, so it can move the cursor Wine sees once yours has left every X window. The same connection tells it when a click or key went to one of Tappo's own windows, which Wine already passes to Tappo, so that one gets no stand-in and doesn't count twice.
+The exception is Tappo's own shortcuts (F7, F8 and F9 out of the box, or whatever you've set them to in its settings). The bridge reads them from Tappo's `shortcuts.json`, picks up changes as you make them, and sends a shortcut through as the real key with its modifiers, so it works from any app like it does on Windows. All Tappo learns from that is that you pressed one of its shortcuts. Only its three shortcuts are read, and one with no modifiers has to be an F-key to work from other apps: a bare letter would tell Tappo every time you typed it, so that one gets a stand-in like any other key and only works while Tappo has the keyboard. A stand-in is never one of your shortcuts either, so if you bind one to F13 to F24, the bridge leaves that key out of the stand-ins.
+
+It also watches the pointer through its own connection to Xwayland, so it can move the cursor Wine sees once yours has left every X window. The same connection tells it when a click or key went to one of Tappo's own windows, which Wine already passes to Tappo, so that one gets no stand-in and doesn't count twice. If one of Tappo's windows has the keyboard but an F-key never reaches it, because Plasma has it bound as a global shortcut, the bridge sends that F-key through for real, so the shortcut box in Tappo's settings records the key you pressed. Plasma still runs its own shortcut too, so pick a key nothing else uses.
 
 Controllers don't go through the bridge at all. Tappo reads them itself through XInput, and Wine passes the pad's buttons on whichever window has focus, so controller presses count while you're playing, the same as on Windows.
 
@@ -114,6 +116,7 @@ Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 
 - `--mouse-hand left|right|off`: which stand-in a click sends, or ignore clicks.
 - `--real-keys`: send your real keys instead of stand-ins. Tappo then sees everything you type, and so does whichever of its windows Wine last focused.
+- `--no-shortcuts`: send stand-ins for Tappo's shortcuts too. They then only work while one of its windows has the keyboard.
 - `--ignore NAME`: skip input devices whose name contains NAME. Repeatable; the default skips YubiKeys.
 - `--hardware-input`: inject through Wine's private hardware-input call, so Tappo can't tell the presses were injected.
 - `--cursor-poll SECONDS`: how often to check whether the pointer has left every X window, 0.1 by default. 0 stops the bridge moving Wine's cursor at all.
