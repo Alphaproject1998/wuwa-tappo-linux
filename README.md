@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 - **It only hears you while it has focus.** On Wayland, Wine never sees input aimed at other apps, so the pet only counted clicks on itself, which is the one time you're not typing. The bridge reads your keyboards and mice and sends Tappo a stand-in key for every press. More on that [below](#the-bridge).
 - **It stays see-through after you hover it.** With "Turns see-through on hover" on, moving off the pet left it faded until you hovered another pet or a panel. Wine only finds out where the pointer is while it's over one of the windows Xwayland handles, so Tappo kept seeing it wherever it left. The bridge notices when the pointer has left them all and moves the cursor Wine sees to the nearest spot clear of them. Your real cursor stays where it is.
 - **It sits in a black box.** Wine draws Tappo into windows with no alpha channel, so everything that should be see-through arrives as black. The prefix is set up so Wine gives everything in it 32-bit windows instead, and the transparency comes through the same as on Windows, soft edges included.
-- **No capitals in text boxes, white flashes and blinking when you drag the pet, and a resize cursor over the whole settings panel.** All Wine bugs, fixed by patching a private copy of Wine that only Tappo uses. Your system Wine isn't touched.
+- **No capitals in text boxes, white flashes and blinking when you drag the pet, a resize cursor over the whole settings panel, and a tray icon that ignores clicks.** All Wine bugs, fixed by patching a private copy of Wine that only Tappo uses. Your system Wine isn't touched.
 - **The panels lag behind.** On NVIDIA, Wine copies each frame of a panel before it has finished arriving, so a tab or button shows its change late, or not until you move the mouse. The launcher turns off explicit sync in NVIDIA's EGL for Tappo only (`__NV_X11_DISABLE_EXPLICIT_SYNC=1`), so each frame is finished before Wine copies it.
 - **It eats about 8 GB of RAM.** Nearly all of that was Wine: it gave every WebView2 process its own copy of a 355 MB DLL, and every renderer 400 MB of bookkeeping for memory it never touches. It's about 1.5 GB now, see [Memory](#memory).
 - **You can't tell what's what in a process list.** Wine renames a process whenever a program names its main thread, so Tappo showed up as `main` and its WebView2 processes as `CrRendererMain`, `CrGpuMain` and friends. They keep their own names now: `WuwaTappo.exe`, `msedgewebview2.` (Linux cuts process names at 15 characters), and Tappo's Wine server runs as `tappo-wineserver`, the bridge as `tappo-bridge` and its helper as `tappo-input.exe`. The rest, `explorer.exe`, `services.exe` and so on, are Wine's own, running in Tappo's prefix.
@@ -110,6 +110,8 @@ The exception is Tappo's own shortcuts (F7, F8 and F9 out of the box, or whateve
 
 It also watches the pointer through its own connection to Xwayland, so it can move the cursor Wine sees once yours has left every X window. The same connection tells it when a click or key went to one of Tappo's own windows, which Wine already passes to Tappo, so that one gets no stand-in and doesn't count twice. If one of Tappo's windows has the keyboard but an F-key never reaches it, because Plasma has it bound as a global shortcut, the bridge sends that F-key through for real, so the shortcut box in Tappo's settings records the key you pressed. Plasma still runs its own shortcut too, so pick a key nothing else uses.
 
+Tappo's menu, from the tray or a right-click on the pet, closes when you click outside it, the same as on Windows. Wine only closes it for clicks it sees, which leaves out every Wayland window, so the bridge closes it for any click that doesn't land on one of Tappo's windows.
+
 Controllers don't go through the bridge at all. Tappo reads them itself through XInput, and Wine passes the pad's buttons on whichever window has focus, so controller presses count while you're playing, the same as on Windows.
 
 Options (`python3 bridge/tappo-bridge.py --help` has the full list):
@@ -117,6 +119,7 @@ Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 - `--mouse-hand left|right|off`: which stand-in a click sends, or ignore clicks.
 - `--real-keys`: send your real keys instead of stand-ins. Tappo then sees everything you type, and so does whichever of its windows Wine last focused.
 - `--no-shortcuts`: send stand-ins for Tappo's shortcuts too. They then only work while one of its windows has the keyboard.
+- `--no-menu-close`: leave Tappo's menu open when you click outside it. A click on a Wayland window then never closes it.
 - `--ignore NAME`: skip input devices whose name contains NAME. Repeatable; the default skips YubiKeys.
 - `--hardware-input`: inject through Wine's private hardware-input call, so Tappo can't tell the presses were injected.
 - `--cursor-poll SECONDS`: how often to check whether the pointer has left every X window, 0.1 by default. 0 stops the bridge moving Wine's cursor at all.

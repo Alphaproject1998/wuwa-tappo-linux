@@ -43,6 +43,15 @@ NTDLL_TEXT_SEGMENT = 0x8000
 NTDLL_TEXT_SEGMENT_SIZE = 0x69d41
 NTDLL_RODATA = 0x72000
 
+SHELL32_NOTIFY_ICON_GET_RECT = 0x6a9d0
+SHELL32_NOTIFY_ICON_GET_RECT_SIZE = 0x50
+SHELL32_FIND_WINDOW_EX = 0xe0a88
+SHELL32_GET_WINDOW_RECT = 0xe0b70
+SHELL32_TRAY_ICON_CLASS = 0x90940
+SHELL32_TEXT = 0x1000
+SHELL32_TEXT_VIRTUAL_SIZE_AT = 0x190
+SHELL32_TEXT_VIRTUAL_SIZE = 0x8f940
+
 
 def rel32(target, next_instruction):
 	return struct.pack('<i', target - next_instruction)
@@ -166,7 +175,47 @@ def main_thread_name_sites():
 	]
 
 
+def tray_icon_rect_sites():
+	body, emit = assembler(SHELL32_NOTIFY_ICON_GET_RECT)
+	emit(bytes.fromhex('4883ec38' '4889542428'))
+	emit(bytes.fromhex('31c9' '31d2'))
+	emit(bytes.fromhex('4c8d05'), SHELL32_TRAY_ICON_CLASS)
+	emit(bytes.fromhex('4531c9'))
+	emit(bytes.fromhex('ff15'), SHELL32_FIND_WINDOW_EX)
+	emit(bytes.fromhex('4885c0' '7419'))
+	emit(bytes.fromhex('4889c1' '488b542428'))
+	emit(bytes.fromhex('ff15'), SHELL32_GET_WINDOW_RECT)
+	emit(bytes.fromhex('85c0' '7407'))
+	emit(bytes.fromhex('31c0' '4883c438c3'))
+	emit(bytes.fromhex('b805400080' '4883c438c3'))
+	body += b'\xcc' * (SHELL32_NOTIFY_ICON_GET_RECT_SIZE - len(body))
+
+	original = bytes.fromhex(
+		'4883ec38f605a5790200017513b8014000804883c438c3660f1f840000000000'
+		'48895424284c8d0d04dc04004c8d050ddc040048894c2420488d157179020031c9'
+		'e85aa80100b8014000804883c438c3'
+	)
+	name = '__wine_tray_icon\0'.encode('utf-16-le')
+	return [
+		(SHELL32_NOTIFY_ICON_GET_RECT, original, bytes(body)),
+		(SHELL32_TRAY_ICON_CLASS, bytes(len(name)), name),
+		(
+			SHELL32_TEXT_VIRTUAL_SIZE_AT,
+			struct.pack('<I', SHELL32_TEXT_VIRTUAL_SIZE),
+			struct.pack('<I', SHELL32_TRAY_ICON_CLASS + len(name) - SHELL32_TEXT),
+		),
+	]
+
+
 PATCHES = {
+	'lib/wine/x86_64-windows/shell32.dll': {
+		'sha256': '071b02931327a305e4c4bca1c46445d602609286abd9edb600ed5c2618630b70',
+		'sites': [
+			# Shell_NotifyIconGetRect was a stub, and Tappo's tray library drops any click it can't get the icon's rect for, so the tray menu never opened.
+			# It now gives the rect of explorer's first tray icon window, which is Tappo's, as nothing else in its prefix has one.
+			*tray_icon_rect_sites(),
+		],
+	},
 	'bin/wineserver': {
 		'sha256': 'c9a0c615ddd8ba168b9fdf5efaaa4769cb2369782c766b579157ed0a5520977e',
 		'sites': [

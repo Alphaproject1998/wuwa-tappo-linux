@@ -46,6 +46,19 @@ static void move_cursor(int root_x, int root_y)
 	if (verbose) fprintf(stderr, "cursor x=%d y=%d\n", x, y);
 }
 
+static void end_menus(void)
+{
+	HWND menu = NULL;
+
+	// A menu ends on a click Wine sees outside it, and Wine never sees one on a Wayland window.
+	// WM_CANCELMODE is what EndMenu posts to the menu loop, and it works from another process.
+	while ((menu = FindWindowExW(NULL, menu, (LPCWSTR)(ULONG_PTR)0x8000, NULL))) {
+		if (!IsWindowVisible(menu)) continue;
+		PostMessageW(menu, WM_CANCELMODE, 0, 0);
+		if (verbose) fprintf(stderr, "ended menu %p\n", menu);
+	}
+}
+
 static void handle_line(char *line)
 {
 	unsigned int vk, scan, extended, down;
@@ -58,6 +71,10 @@ static void handle_line(char *line)
 	}
 	if (sscanf(line, "move %d %d", &x, &y) == 2) {
 		move_cursor(x, y);
+		return;
+	}
+	if (!strcmp(line, "endmenu\n")) {
+		end_menus();
 		return;
 	}
 	fprintf(stderr, "ignored: %s", line);

@@ -382,11 +382,11 @@ class Session:
 	async def start(self):
 		await self.start_helper()
 		self.scanner = asyncio.create_task(self.scan_devices())
-		if self.options.cursor_poll > 0 or self.options.direct_wait > 0:
+		if self.options.cursor_poll > 0 or self.options.direct_wait > 0 or not self.options.no_menu_close:
 			try:
 				self.x = XDisplay()
 			except OSError as error:
-				log(f'not moving the cursor off X windows or skipping presses Wine already got: {error}')
+				log(f'not moving the cursor off X windows, skipping presses Wine already got or closing menus: {error}')
 			else:
 				if self.options.cursor_poll > 0:
 					self.watcher = asyncio.create_task(self.watch_pointer())
@@ -522,6 +522,9 @@ class Session:
 			await asyncio.sleep(0.002)
 		return 'wine'
 
+	def outside_app(self):
+		return self.x is not None and self.x.window_class(self.x.pointer()[1]) != self.owner_class
+
 	async def forward(self, code, down):
 		if not down:
 			self.held.discard(code)
@@ -543,6 +546,8 @@ class Session:
 		# Wine passes a press that X gave one of Tappo's windows straight to its hooks, so a stand-in would count it twice.
 		if landing == 'wine':
 			return
+		if code in MOUSE_BUTTONS and not self.options.no_menu_close and self.outside_app():
+			await self.send('endmenu')
 
 		shortcuts = self.shortcuts.current()
 		vk = SHORTCUT_KEYS.get(code)
@@ -677,6 +682,10 @@ def parse_options():
 		'--direct-wait', type=float, default=0.05,
 		help='seconds to wait for X to report a press made while one of the app\'s windows has the X keyboard focus or the pointer; '
 		'X reporting it means Wine got the press itself, so no stand-in is sent; 0 always sends one',
+	)
+	parser.add_argument(
+		'--no-menu-close', action='store_true',
+		help='leave the app\'s menus open on a click outside them, which then never close for a click on a Wayland window',
 	)
 	parser.add_argument('--poll', type=float, default=2.0, help='seconds between checks for the app')
 	parser.add_argument(
