@@ -11,6 +11,10 @@ WIN32U_SET_WINDOW_RGN_BODY = 0x136d34
 WIN32U_RESUME = 0x136d3f
 WIN32U_PROLOGUE = bytes.fromhex('554889e54881ece0000000')
 WIN32U_CAVE = 0x13f7b0
+WIN32U_SURFACE_FLUSH_BODY = 0x245f4
+WIN32U_SURFACE_FLUSH_RESUME = 0x245ff
+WIN32U_SURFACE_FLUSH_PROLOGUE = bytes.fromhex('554889e54881ec00090000')
+WIN32U_FLUSH_CAVE = 0x13f800
 WIN32U_TEXT_SEGMENT = 0xb000
 WIN32U_TEXT_SEGMENT_SIZE = 0x1347ad
 
@@ -19,8 +23,22 @@ WINEX11_CACHE_CURSOR = 0x26758
 WINEX11_GIVE_UP = 0x26729
 WINEX11_X_CREATE_FONT_CURSOR = 0x6f440
 WINEX11_CAVE = 0x51b30
+WINEX11_FORCE_ACTIVATE = 0x38000
+WINEX11_SET_USER_TIME = 0x3802d
+WINEX11_CALL_HWND_PARAM_GOT = 0x6fc68
+WINEX11_ACTIVATE_CAVE = 0x51b60
+WINEX11_NET_ACTIVE_WINDOW_BODY = 0x3a384
+WINEX11_NET_ACTIVE_WINDOW_RESUME = 0x3a38a
+WINEX11_NET_ACTIVE_WINDOW_PROLOGUE = bytes.fromhex('554889e54157')
+WINEX11_REQUEST_CAVE = 0x51bb0
+WINEX11_MONITORS_LOCK_CHECK = 0x3428e
+WINEX11_MONITORS_UNLOCKED = 0x3429c
+WINEX11_MONITORS_DONE = 0x343a8
+WINEX11_XINERAMA_FULLSCREEN_MONITORS = 0x46020
+WINEX11_MONITORS_CAVE = 0x51c00
 WINEX11_TEXT_SEGMENT = 0x7000
 WINEX11_TEXT_SEGMENT_SIZE = 0x4ab21
+WINEX11_RODATA = 0x52000
 XC_LEFT_PTR = 68
 
 WINESERVER_DETACH_CREATE_INPUT = 0x3a718
@@ -95,7 +113,30 @@ def stage_region_sites():
 	return [
 		(WIN32U_SET_WINDOW_RGN_BODY, WIN32U_PROLOGUE, jump),
 		(WIN32U_CAVE, bytes(len(cave)), bytes(cave)),
-		grow_text_segment(WIN32U_TEXT_SEGMENT, WIN32U_TEXT_SEGMENT_SIZE, WIN32U_CAVE + len(cave)),
+		# grow_text_segment(WIN32U_TEXT_SEGMENT, WIN32U_TEXT_SEGMENT_SIZE, WIN32U_CAVE + len(cave)),
+	]
+
+
+def stage_flush_sites():
+	cave, emit = assembler(WIN32U_FLUSH_CAVE)
+	emit(bytes.fromhex('57'))
+	emit(bytes.fromhex('488b7f20'))
+	emit(bytes.fromhex('ba0a000000'))
+	emit(bytes.fromhex('48c7c6ecffffff'))
+	emit(bytes.fromhex('e8'), WIN32U_CALL_HWND_PARAM)
+	emit(bytes.fromhex('5f'))
+	emit(bytes.fromhex('2520000800'))
+	emit(bytes.fromhex('3d20000800'))
+	emit(bytes.fromhex('7501c3'))
+	emit(WIN32U_SURFACE_FLUSH_PROLOGUE)
+	emit(bytes.fromhex('e9'), WIN32U_SURFACE_FLUSH_RESUME)
+
+	jump = bytes.fromhex('e9') + rel32(WIN32U_FLUSH_CAVE, WIN32U_SURFACE_FLUSH_BODY + 5)
+	jump += bytes.fromhex('660f1f440000')
+	return [
+		(WIN32U_SURFACE_FLUSH_BODY, WIN32U_SURFACE_FLUSH_PROLOGUE, jump),
+		(WIN32U_FLUSH_CAVE, bytes(len(cave)), bytes(cave)),
+		grow_text_segment(WIN32U_TEXT_SEGMENT, WIN32U_TEXT_SEGMENT_SIZE, WIN32U_FLUSH_CAVE + len(cave)),
 	]
 
 
@@ -114,7 +155,61 @@ def fallback_cursor_sites():
 	return [
 		(WINEX11_CREATE_CURSOR_CHECK, bytes.fromhex('4885c0752f'), bytes.fromhex('e9') + rel32(WINEX11_CAVE, WINEX11_CREATE_CURSOR_CHECK + 5)),
 		(WINEX11_CAVE, bytes(len(cave)), bytes(cave)),
-		grow_text_segment(WINEX11_TEXT_SEGMENT, WINEX11_TEXT_SEGMENT_SIZE, WINEX11_CAVE + len(cave)),
+		# grow_text_segment(WINEX11_TEXT_SEGMENT, WINEX11_TEXT_SEGMENT_SIZE, WINEX11_CAVE + len(cave)),
+	]
+
+
+def no_activate_sites():
+	cave, emit = assembler(WINEX11_ACTIVATE_CAVE)
+	emit(bytes.fromhex('48394b50' '7409'))
+	emit(bytes.fromhex('80bba800000000' '7906'))
+	emit(bytes.fromhex('41bc01000000'))
+	emit(bytes.fromhex('4152' '4883ec08'))
+	emit(bytes.fromhex('488b7b50' '48c7c6ecffffff' 'ba0a000000'))
+	emit(bytes.fromhex('ff15'), WINEX11_CALL_HWND_PARAM_GOT)
+	emit(bytes.fromhex('4883c408' '415a'))
+	emit(bytes.fromhex('a900000008' '7403' '4531e4'))
+	emit(bytes.fromhex('4489e0' 'f7d8' '4819f6'))
+	emit(bytes.fromhex('e9'), WINEX11_SET_USER_TIME)
+
+	request, emit = assembler(WINEX11_REQUEST_CAVE)
+	emit(bytes.fromhex('5756' '4883ec08'))
+	emit(bytes.fromhex('48c7c6ecffffff' 'ba0a000000'))
+	emit(bytes.fromhex('ff15'), WINEX11_CALL_HWND_PARAM_GOT)
+	emit(bytes.fromhex('4883c408' '5e5f'))
+	emit(bytes.fromhex('a900000008' '7401' 'c3'))
+	emit(WINEX11_NET_ACTIVE_WINDOW_PROLOGUE)
+	emit(bytes.fromhex('e9'), WINEX11_NET_ACTIVE_WINDOW_RESUME)
+
+	original = bytes.fromhex('48394b50741a' '80bba800000000' '7811' '4489e0' 'f7d8' '4819f6' 'eb14')
+	jump = bytes.fromhex('e9') + rel32(WINEX11_ACTIVATE_CAVE, WINEX11_FORCE_ACTIVATE + 5)
+	request_jump = bytes.fromhex('e9') + rel32(WINEX11_REQUEST_CAVE, WINEX11_NET_ACTIVE_WINDOW_BODY + 5) + b'\x90'
+	return [
+		(WINEX11_FORCE_ACTIVATE, original, jump + b'\x90' * (len(original) - len(jump))),
+		(WINEX11_ACTIVATE_CAVE, bytes(len(cave)), bytes(cave)),
+		(WINEX11_NET_ACTIVE_WINDOW_BODY, WINEX11_NET_ACTIVE_WINDOW_PROLOGUE, request_jump),
+		(WINEX11_REQUEST_CAVE, bytes(len(request)), bytes(request)),
+	]
+
+
+def fullscreen_monitors_sites():
+	cave, emit = assembler(WINEX11_MONITORS_CAVE)
+	emit(bytes.fromhex('4983ba3004000000' '7505'))
+	emit(bytes.fromhex('e9'), WINEX11_MONITORS_UNLOCKED)
+	emit(bytes.fromhex('498dbae0030000' '488d75d0' '488d55d8'))
+	emit(bytes.fromhex('e8'), WINEX11_XINERAMA_FULLSCREEN_MONITORS)
+	emit(bytes.fromhex('85c0' '7445'))
+	emit(bytes.fromhex('4c8b9528ffffff' '4c8b9d20ffffff' '31c9'))
+	emit(bytes.fromhex('488b440dd0' '493b040b' '752a' '4883c108' '4883f928' '75eb'))
+	emit(bytes.fromhex('31c9'))
+	emit(bytes.fromhex('498b040b' '4989840ab0020000' '4989840ab8030000' '4883c108' '4883f928' '75e2'))
+	emit(bytes.fromhex('e9'), WINEX11_MONITORS_DONE)
+
+	original = bytes.fromhex('4983ba3004000000' '0f850c010000')
+	jump = bytes.fromhex('e9') + rel32(WINEX11_MONITORS_CAVE, WINEX11_MONITORS_LOCK_CHECK + 5)
+	return [
+		(WINEX11_MONITORS_LOCK_CHECK, original, jump + b'\x90' * (len(original) - len(jump))),
+		(WINEX11_MONITORS_CAVE, bytes(len(cave)), bytes(cave)),
 	]
 
 
@@ -246,6 +341,9 @@ PATCHES = {
 			# Even zeroed, that flush blinked the pet out while dragged.
 			# The stage is WS_EX_TRANSPARENT|WS_EX_LAYERED and already has an empty input shape, so SetWindowRgn on such a window now just frees the region.
 			*stage_region_sites(),
+			# After a screen switch, window_surface_flush() drew the stage's never-drawn surface over the whole screen in opaque black until WebView2's next frame, so it now skips WS_EX_TRANSPARENT|WS_EX_LAYERED windows.
+			# The GetWindowLong takes the user lock under the surfaces lock, which nothing takes in the other order.
+			*stage_flush_sites(),
 		],
 	},
 	'lib/wine/x86_64-unix/winex11.so': {
@@ -253,6 +351,13 @@ PATCHES = {
 		'sites': [
 			# WebView2's cursors reach set_window_cursor() as another process's handles, which create_cursor() can't read, so the panel kept a stale resize cursor; those now give the arrow.
 			*fallback_cursor_sites(),
+			# Each screen switch remaps the full-screen DesktopCatInput, and window_set_wm_state() asked KWin to activate it, taking the keyboard off the app in use.
+			# Windows never activates a WS_EX_NOACTIVATE window by showing it, so neither the map nor set_net_active_window() asks for one any more.
+			*no_activate_sites(),
+			# window_set_net_wm_fullscreen_monitors() sent _NET_WM_FULLSCREEN_MONITORS back to KWin for every position it took from it, so a switch between two same-sized screens bounced the stage, sometimes back where it started.
+			# Monitors that match where KWin already has the window now count as sent.
+			*fullscreen_monitors_sites(),
+			grow_text_segment(WINEX11_TEXT_SEGMENT, WINEX11_TEXT_SEGMENT_SIZE, WINEX11_RODATA),
 		],
 	},
 }
