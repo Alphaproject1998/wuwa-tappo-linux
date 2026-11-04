@@ -81,6 +81,10 @@ IS_VIEWABLE = 2
 BUTTON_MASKS = 0x1f00
 SHAPE_BOUNDING = 0
 SHAPE_INPUT = 2
+POINTER_ROOT = 1
+ANY_PROPERTY_TYPE = 0
+X_SUCCESS = 0
+ATOM_NAMES = ('WM_STATE', '_NET_WM_STATE', '_NET_WM_STATE_FULLSCREEN', '_NET_WM_PID')
 
 X_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 
@@ -142,6 +146,20 @@ def find_app(process_name, prefix):
 			continue
 		return int(entry.name), app_prefix
 	return None
+
+
+def wine_prefix_of(pid):
+	entry = Path('/proc') / str(pid)
+	try:
+		program = (entry / 'cmdline').read_bytes().split(b'\0')[0]
+		if not program.lower().endswith(b'.exe'):
+			return None
+		environ = dict(
+			line.split(b'=', 1) for line in (entry / 'environ').read_bytes().split(b'\0') if b'=' in line
+		)
+		return environ.get(b'WINEPREFIX', str(Path.home() / '.wine').encode()).decode()
+	except (OSError, ValueError):
+		return None
 
 
 def scan_code(code):
@@ -209,6 +227,12 @@ def inside(x, y, rectangles):
 	return any(left <= x < right and top <= y < bottom for left, top, right, bottom in rectangles)
 
 
+def overlap(first, second):
+	width = min(first[2], second[2]) - max(first[0], second[0])
+	height = min(first[3], second[3]) - max(first[1], second[1])
+	return max(width, 0) * max(height, 0)
+
+
 def owned_under(position, areas):
 	return next((owned for area, owned in reversed(areas) if inside(*position, [area])), False)
 
@@ -248,6 +272,14 @@ class XDisplay:
 		)
 		self.get_monitors = bind(xrandr, 'XRRGetMonitors', ctypes.POINTER(XRRMonitorInfo), pointer, window, ctypes.c_int, pointer)
 		self.free_monitors = bind(xrandr, 'XRRFreeMonitors', None, ctypes.POINTER(XRRMonitorInfo))
+		self.intern_atom = bind(x11, 'XInternAtom', ctypes.c_ulong, pointer, ctypes.c_char_p, ctypes.c_int)
+		self.get_property = bind(
+			x11, 'XGetWindowProperty', ctypes.c_int, pointer, window, ctypes.c_ulong, ctypes.c_long, ctypes.c_long,
+			ctypes.c_int, ctypes.c_ulong, *[pointer] * 5,
+		)
+		self.translate_coordinates = bind(
+			x11, 'XTranslateCoordinates', ctypes.c_int, pointer, window, window, ctypes.c_int, ctypes.c_int, *[pointer] * 3,
+		)
 
 		# Otherwise a window closing mid-scan would end the bridge, since Xlib's default handler exits on any error.
 		self.ignore_errors = X_ERROR_HANDLER(lambda display, error: 0)
@@ -257,6 +289,7 @@ class XDisplay:
 		if not self.display:
 			raise OSError(f'cannot open X display {os.environ.get("DISPLAY", "(DISPLAY not set)")}')
 		self.root = bind(x11, 'XDefaultRootWindow', window, pointer)(self.display)
+		self.atoms = {name: self.intern_atom(self.display, name.encode(), False) for name in ATOM_NAMES}
 
 	def close(self):
 		self.close_display(self.display)
@@ -274,6 +307,63 @@ class XDisplay:
 		window, revert = ctypes.c_ulong(), ctypes.c_int()
 		self.get_input_focus(self.display, ctypes.byref(window), ctypes.byref(revert))
 		return window.value
+
+	def focused_client(self):
+		window = self.focus()
+		# The focus can be on a child window, which has none of the window manager's properties, so the fullscreen state has to come from the managed one above it.
+		while window and window not in (POINTER_ROOT, self.root):
+			if self.property_values(window, 'WM_STATE') is not None:
+				return window
+			window = self.parent(window)
+		return None
+
+	def parent(self, window):
+		root, parent = ctypes.c_ulong(), ctypes.c_ulong()
+		children = ctypes.POINTER(ctypes.c_ulong)()
+		count = ctypes.c_uint()
+		if not self.query_tree(
+			self.display, window, ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count),
+		):
+			return None
+		if children:
+			self.free(children)
+		return parent.value
+
+	def property_values(self, window, name):
+		actual_type, actual_format = ctypes.c_ulong(), ctypes.c_int()
+		count, remaining = ctypes.c_ulong(), ctypes.c_ulong()
+		data = ctypes.c_void_p()
+		status = self.get_property(
+			self.display, window, self.atoms[name], 0, 64, False, ANY_PROPERTY_TYPE, ctypes.byref(actual_type),
+			ctypes.byref(actual_format), ctypes.byref(count), ctypes.byref(remaining), ctypes.byref(data),
+		)
+		if status != X_SUCCESS or not actual_type.value:
+			return None
+		values = []
+		# Read as unsigned longs because Xlib returns format-32 items as C longs, 64 bits each here.
+		if actual_format.value == 32:
+			values = list(ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[:count.value])
+		if data:
+			self.free(data)
+		return values
+
+	def is_fullscreen(self, window):
+		return self.atoms['_NET_WM_STATE_FULLSCREEN'] in (self.property_values(window, '_NET_WM_STATE') or [])
+
+	def pid(self, window):
+		values = self.property_values(window, '_NET_WM_PID')
+		return values[0] if values else None
+
+	def area(self, window):
+		attributes = XWindowAttributes()
+		if not self.window_attributes(self.display, window, ctypes.byref(attributes)):
+			return None
+		x, y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+		if not self.translate_coordinates(
+			self.display, window, self.root, 0, 0, ctypes.byref(x), ctypes.byref(y), ctypes.byref(child),
+		):
+			return None
+		return x.value, y.value, x.value + attributes.width, y.value + attributes.height
 
 	def holds(self, code):
 		if code in BUTTON_STATE:
@@ -378,23 +468,37 @@ class Session:
 		self.last_hand = 'right'
 		self.x = None
 		self.watcher = None
+		self.fullscreen_watcher = None
+		self.last_focus = None
+		self.stand_in = False
+		self.covering = False
 
 	async def start(self):
 		await self.start_helper()
 		self.scanner = asyncio.create_task(self.scan_devices())
-		if self.options.cursor_poll > 0 or self.options.direct_wait > 0 or not self.options.no_menu_close:
+		uses_x = (
+			self.options.cursor_poll > 0 or self.options.direct_wait > 0 or not self.options.no_menu_close
+			or self.options.fullscreen_poll > 0
+		)
+		if uses_x:
 			try:
 				self.x = XDisplay()
 			except OSError as error:
-				log(f'not moving the cursor off X windows, skipping presses Wine already got or closing menus: {error}')
+				log(
+					'not moving the cursor off X windows, skipping presses Wine already got, closing menus '
+					f'or telling Tappo about fullscreen apps: {error}'
+				)
 			else:
 				if self.options.cursor_poll > 0:
 					self.watcher = asyncio.create_task(self.watch_pointer())
+				if self.options.fullscreen_poll > 0:
+					self.fullscreen_watcher = asyncio.create_task(self.watch_fullscreen())
 
 	async def stop(self):
 		self.scanner.cancel()
-		if self.watcher:
-			self.watcher.cancel()
+		for watcher in (self.watcher, self.fullscreen_watcher):
+			if watcher:
+				watcher.cancel()
 		for reader in self.readers.values():
 			reader.cancel()
 		self.readers.clear()
@@ -419,6 +523,8 @@ class Session:
 			stdout=asyncio.subprocess.DEVNULL,
 			env={**os.environ, 'WINEPREFIX': self.prefix, 'WINEDEBUG': os.environ.get('WINEDEBUG', '-all')},
 		)
+		self.last_focus = None
+		self.stand_in = self.covering = False
 		log(f'helper started in {self.prefix} (pid {self.helper.pid})')
 
 	async def scan_devices(self):
@@ -473,6 +579,43 @@ class Session:
 				continue
 			parked, parked_window = spot, None
 			await self.send(f'move {spot[0]} {spot[1]}')
+
+	async def watch_fullscreen(self):
+		# Tappo decides an app is fullscreen from Wine's foreground window, which a Linux app never is, so the helper's stand-in takes its place.
+		while True:
+			await asyncio.sleep(self.options.fullscreen_poll)
+			state = self.focus_state()
+			if state == self.last_focus:
+				continue
+			self.last_focus = state
+			if state[0] == 'fullscreen':
+				left, top, right, bottom = state[2]
+				self.stand_in = self.covering = True
+				await self.send(f'fullscreen {left} {top} {right - left} {bottom - top}')
+			elif state[0] == 'prefix' and self.stand_in:
+				await self.send(f'focus {state[1]:x}')
+			elif state[0] == 'windowed' and self.covering:
+				self.covering = False
+				await self.send('windowed')
+
+	def focus_state(self):
+		window = self.x.focused_client()
+		if not window:
+			return ('windowed',)
+		# Wine already tracks focus for its own windows, so for those the stand-in only has to get out of the way.
+		if self.x.window_class(window) == self.owner_class or self.in_prefix(self.x.pid(window)):
+			return ('prefix', window)
+		if not self.x.is_fullscreen(window):
+			return ('windowed',)
+		area = self.x.area(window)
+		screens = [screen for screen in self.x.screens() if area and overlap(area, screen)]
+		if not screens:
+			return ('windowed',)
+		return ('fullscreen', window, max(screens, key=lambda screen: overlap(area, screen)))
+
+	def in_prefix(self, pid):
+		prefix = pid and wine_prefix_of(pid)
+		return bool(prefix) and Path(prefix).resolve() == Path(self.prefix).resolve()
 
 	async def read_device(self, path, device):
 		try:
@@ -686,6 +829,11 @@ def parse_options():
 	parser.add_argument(
 		'--no-menu-close', action='store_true',
 		help='leave the app\'s menus open on a click outside them, which then never close for a click on a Wayland window',
+	)
+	parser.add_argument(
+		'--fullscreen-poll', type=float, default=0.5,
+		help='seconds between checks for a fullscreen X window having the keyboard, which the helper then stands in for, '
+		'so the app\'s "Enter Game Mode in Fullscreen" can see it; 0 turns this off',
 	)
 	parser.add_argument('--poll', type=float, default=2.0, help='seconds between checks for the app')
 	parser.add_argument(

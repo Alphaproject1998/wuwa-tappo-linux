@@ -19,6 +19,7 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 - **It crashes on startup.** Wine bug 60225 takes Tappo down as it starts. A patched `ole32.dll` goes into the prefix, and only Tappo uses it.
 - **It only hears you while it has focus.** On Wayland, Wine never sees input aimed at other apps, so the pet only counted clicks on itself, which is the one time you're not typing. The bridge reads your keyboards and mice and sends Tappo a stand-in key for every press. More on that [below](#the-bridge).
 - **It stays see-through after you hover it.** With "Turns see-through on hover" on, moving off the pet left it faded until you hovered another pet or a panel. Wine only finds out where the pointer is while it's over one of the windows Xwayland handles, so Tappo kept seeing it wherever it left. The bridge notices when the pointer has left them all and moves the cursor Wine sees to the nearest spot clear of them. Your real cursor stays where it is.
+- **"Enter Game Mode in Fullscreen" never kicks in.** Tappo checks whether the window in front covers a screen, but the only windows Wine knows about are its own, so as far as Tappo could tell nothing fullscreen was ever in front. While a fullscreen app has the keyboard, the bridge puts an invisible window the size of that screen in front for Wine, which is all Tappo looks at.
 - **It sits in a black box.** Wine draws Tappo into windows with no alpha channel, so everything that should be see-through arrives as black. The prefix is set up so Wine gives everything in it 32-bit windows instead, and the transparency comes through the same as on Windows, soft edges included.
 - **No capitals in text boxes, white flashes and blinking when you drag the pet, a resize cursor over the whole settings panel, a tray icon that ignores clicks, and a screen switch that blacks the screen out, steals focus from the app you're in and sometimes bounces the pet straight back.** All Wine bugs, fixed by patching a private copy of Wine that only Tappo uses. Your system Wine isn't touched.
 - **The panels lag behind.** On NVIDIA, Wine copies each frame of a panel before it has finished arriving, so a tab or button shows its change late, or not until you move the mouse. The launcher turns off explicit sync in NVIDIA's EGL for Tappo only (`__NV_X11_DISABLE_EXPLICIT_SYNC=1`), so each frame is finished before Wine copies it.
@@ -112,6 +113,8 @@ It also watches the pointer through its own connection to Xwayland, so it can mo
 
 Tappo's menu, from the tray or a right-click on the pet, closes when you click outside it, the same as on Windows. Wine only closes it for clicks it sees, which leaves out every Wayland window, so the bridge closes it for any click that doesn't land on one of Tappo's windows.
 
+It also stands in for fullscreen apps, for Tappo's "Enter Game Mode in Fullscreen". Tappo goes by the window Wine has in front, which is never a Linux app, so while a fullscreen X window has the keyboard, the bridge's helper puts a window of its own in front for Wine, sized to that screen. Wine never hands it to Xwayland, so it can't show up or take focus. Switch to something windowed and it shrinks, so Tappo leaves game mode again, and if you click into Tappo it steps aside.
+
 Controllers don't go through the bridge at all. Tappo reads them itself through XInput, and Wine passes the pad's buttons on whichever window has focus, so controller presses count while you're playing, the same as on Windows.
 
 Options (`python3 bridge/tappo-bridge.py --help` has the full list):
@@ -120,6 +123,7 @@ Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 - `--real-keys`: send your real keys instead of stand-ins. Tappo then sees everything you type, and so does whichever of its windows Wine last focused.
 - `--no-shortcuts`: send stand-ins for Tappo's shortcuts too. They then only work while one of its windows has the keyboard.
 - `--no-menu-close`: leave Tappo's menu open when you click outside it. A click on a Wayland window then never closes it.
+- `--fullscreen-poll SECONDS`: how often to check whether a fullscreen app has the keyboard, for "Enter Game Mode in Fullscreen". 0.5 by default; 0 turns that off.
 - `--ignore NAME`: skip input devices whose name contains NAME. Repeatable; the default skips YubiKeys.
 - `--hardware-input`: inject through Wine's private hardware-input call, so Tappo can't tell the presses were injected.
 - `--cursor-poll SECONDS`: how often to check whether the pointer has left every X window, 0.1 by default. 0 stops the bridge moving Wine's cursor at all.
@@ -144,6 +148,7 @@ What's left is mostly WebView2's seven renderers, one per window including the f
 
 - Inside Tappo's panels, the hand and text cursors show as the normal arrow. The panels are WebView2, which runs as its own process, and Wine can't apply a cursor that belongs to another process.
 - While your pointer is over other apps, Tappo sees the cursor parked just clear of the X windows, not where it really is.
+- "Enter Game Mode in Fullscreen" only notices apps that run through Xwayland, which takes in games under Proton or Wine and many native ones. A fullscreen Wayland app, like a video in Firefox, still looks windowed to Tappo, because nothing outside KWin can see it.
 - The pet's state can reset when Tappo is killed rather than quit. Quitting from the tray or logging out of Plasma keeps it, but a shutdown that skips Plasma, such as `systemctl poweroff` from a terminal, still kills it.
 - Kuro's login page doesn't like ad blockers or any other filtering. If signing in fails, open the login link in a clean browser with no extensions. Thanks to timurinal for finding that one.
 
