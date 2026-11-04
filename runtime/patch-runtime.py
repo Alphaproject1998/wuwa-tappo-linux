@@ -36,6 +36,11 @@ WINEX11_MONITORS_UNLOCKED = 0x3429c
 WINEX11_MONITORS_DONE = 0x343a8
 WINEX11_XINERAMA_FULLSCREEN_MONITORS = 0x46020
 WINEX11_MONITORS_CAVE = 0x51c00
+WINEX11_LAYERED_CHECK = 0x3b630
+WINEX11_LAYERED_ATTRIBUTES_CHECK = 0x3b63d
+WINEX11_LAYERED_MAP_NOW = 0x3b4a7
+WINEX11_OVERLAY_CAVE = 0x51c80
+WS_EX_OVERLAY = 0x80028
 WINEX11_TEXT_SEGMENT = 0x7000
 WINEX11_TEXT_SEGMENT_SIZE = 0x4ab21
 WINEX11_RODATA = 0x52000
@@ -213,6 +218,24 @@ def fullscreen_monitors_sites():
 	]
 
 
+def overlay_map_sites():
+	cave, emit = assembler(WINEX11_OVERLAY_CAVE)
+	emit(bytes.fromhex('8b8558ffffff'))
+	emit(bytes.fromhex('a900000800'))
+	emit(bytes.fromhex('0f84'), WINEX11_LAYERED_MAP_NOW)
+	emit(bytes.fromhex('25') + struct.pack('<I', WS_EX_OVERLAY))
+	emit(bytes.fromhex('3d') + struct.pack('<I', WS_EX_OVERLAY))
+	emit(bytes.fromhex('0f84'), WINEX11_LAYERED_MAP_NOW)
+	emit(bytes.fromhex('e9'), WINEX11_LAYERED_ATTRIBUTES_CHECK)
+
+	original = bytes.fromhex('f6855affffff08' '0f846afeffff')
+	jump = bytes.fromhex('e9') + rel32(WINEX11_OVERLAY_CAVE, WINEX11_LAYERED_CHECK + 5)
+	return [
+		(WINEX11_LAYERED_CHECK, original, jump + b'\x90' * (len(original) - len(jump))),
+		(WINEX11_OVERLAY_CAVE, bytes(len(cave)), bytes(cave)),
+	]
+
+
 def thread_input_detach_sites():
 	cave, emit = assembler(WINESERVER_CAVE)
 	emit(bytes.fromhex('4d85ff743f'))
@@ -357,6 +380,9 @@ PATCHES = {
 			# window_set_net_wm_fullscreen_monitors() sent _NET_WM_FULLSCREEN_MONITORS back to KWin for every position it took from it, so a switch between two same-sized screens bounced the stage, sometimes back where it started.
 			# Monitors that match where KWin already has the window now count as sent.
 			*fullscreen_monitors_sites(),
+			# X11DRV_WindowPosChanged() holds back mapping a layered window until it has layered attributes, and Tappo's toast overlay never gets any, so no toast ever showed.
+			# A click-through, always-on-top layered window now maps straight away, as Windows shows it; other layered windows still wait, Tauri's invisible helper windows among them.
+			*overlay_map_sites(),
 			grow_text_segment(WINEX11_TEXT_SEGMENT, WINEX11_TEXT_SEGMENT_SIZE, WINEX11_RODATA),
 		],
 	},
