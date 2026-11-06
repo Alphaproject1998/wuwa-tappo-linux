@@ -15,8 +15,14 @@ WIN32U_SURFACE_FLUSH_BODY = 0x245f4
 WIN32U_SURFACE_FLUSH_RESUME = 0x245ff
 WIN32U_SURFACE_FLUSH_PROLOGUE = bytes.fromhex('554889e54881ec00090000')
 WIN32U_FLUSH_CAVE = 0x13f800
+WIN32U_REG_CREATE_KEY_ATTRIBUTES = 0x85a13
+WIN32U_REG_CREATE_KEY_CALL = 0x85a1a
+WIN32U_REG_CREATE_KEY_LOOP = 0x85ae3
+WIN32U_REG_CREATE_KEY_LOOP_RESUME = 0x85ae9
+WIN32U_OPEN_LINK_CAVE = 0x13f840
 WIN32U_TEXT_SEGMENT = 0xb000
 WIN32U_TEXT_SEGMENT_SIZE = 0x1347ad
+WIN32U_RODATA = 0x140000
 
 WINEX11_CREATE_CURSOR_CHECK = 0x26724
 WINEX11_CACHE_CURSOR = 0x26758
@@ -141,7 +147,24 @@ def stage_flush_sites():
 	return [
 		(WIN32U_SURFACE_FLUSH_BODY, WIN32U_SURFACE_FLUSH_PROLOGUE, jump),
 		(WIN32U_FLUSH_CAVE, bytes(len(cave)), bytes(cave)),
-		grow_text_segment(WIN32U_TEXT_SEGMENT, WIN32U_TEXT_SEGMENT_SIZE, WIN32U_FLUSH_CAVE + len(cave)),
+		# grow_text_segment(WIN32U_TEXT_SEGMENT, WIN32U_TEXT_SEGMENT_SIZE, WIN32U_FLUSH_CAVE + len(cave)),
+	]
+
+
+def open_link_sites():
+	cave, emit = assembler(WIN32U_OPEN_LINK_CAVE)
+	emit(bytes.fromhex('4489e8' '83e008' 'c1e005' '8945b8'))
+	emit(bytes.fromhex('e9'), WIN32U_REG_CREATE_KEY_CALL)
+	loop = WIN32U_OPEN_LINK_CAVE + len(cave)
+	emit(bytes.fromhex('4883ec08' '31c9'))
+	emit(bytes.fromhex('4589ca' '4183e208' '41c1e205' '448955b8'))
+	emit(bytes.fromhex('e9'), WIN32U_REG_CREATE_KEY_LOOP_RESUME)
+
+	attributes, loop_call = WIN32U_REG_CREATE_KEY_ATTRIBUTES, WIN32U_REG_CREATE_KEY_LOOP
+	return [
+		(attributes, bytes.fromhex('c745b800000000'), bytes.fromhex('e9') + rel32(WIN32U_OPEN_LINK_CAVE, attributes + 5) + bytes.fromhex('6690')),
+		(loop_call, bytes.fromhex('4883ec0831c9'), bytes.fromhex('e9') + rel32(loop, loop_call + 5) + b'\x90'),
+		(WIN32U_OPEN_LINK_CAVE, bytes(len(cave)), bytes(cave)),
 	]
 
 
@@ -367,6 +390,10 @@ PATCHES = {
 			# After a screen switch, window_surface_flush() drew the stage's never-drawn surface over the whole screen in opaque black until WebView2's next frame, so it now skips WS_EX_TRANSPARENT|WS_EX_LAYERED windows.
 			# The GetWindowLong takes the user lock under the surfaces lock, which nothing takes in the other order.
 			*stage_flush_sites(),
+			# reg_create_key() dropped REG_OPTION_OPEN_LINK, so the DISPLAYn links never moved off the RandR ids screens had before a sleep, and each screen got another's work area, putting the pet off screen.
+			# It now passes OBJ_OPENLINK for the last part of the path, as kernelbase's create_key() does.
+			*open_link_sites(),
+			grow_text_segment(WIN32U_TEXT_SEGMENT, WIN32U_TEXT_SEGMENT_SIZE, WIN32U_RODATA),
 		],
 	},
 	'lib/wine/x86_64-unix/winex11.so': {
