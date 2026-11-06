@@ -114,6 +114,8 @@ It also watches the pointer through its own connection to Xwayland, so it can mo
 
 Tappo's menu, from the tray or a right-click on the pet, closes when you click outside it, the same as on Windows. Wine only closes it for clicks it sees, which leaves out every Wayland window, so the bridge closes it for any click that doesn't land on one of Tappo's windows.
 
+Tappo treats every update as one you have to install: from the moment it finds one until it's installed, it counts no taps, won't open its panel and cuts its tray menu down to Exit. Its update window (titled 强制更新) is an ordinary window, though, so it can open behind everything else or on another screen, and the pet just looks broken. Once that window has been open for a minute, the bridge sends a notification saying an update is waiting, with a button that brings the window up.
+
 It also stands in for fullscreen apps, for Tappo's "Enter Game Mode in Fullscreen". Tappo goes by the window Wine has in front, which is never a Linux app, so while a fullscreen X window has the keyboard, the bridge's helper puts a window of its own in front for Wine, sized to that screen. Wine never hands it to Xwayland, so it can't show up or take focus. Switch to something windowed and it shrinks, so Tappo leaves game mode again, and if you click into Tappo it steps aside.
 
 Controllers don't go through the bridge at all. Tappo reads them itself through XInput, and Wine passes the pad's buttons on whichever window has focus, so controller presses count while you're playing, the same as on Windows.
@@ -131,6 +133,8 @@ Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 - `--cursor-margin PIXELS`: how far from any X window that moved cursor lands, when there's room. 32 by default.
 - `--cursor-recheck SECONDS`: how often to look for a window that has opened over the moved cursor, and move it again if one has. 1 by default, 0 never looks.
 - `--direct-wait SECONDS`: how long to wait for Xwayland to report a press while one of Tappo's windows has the keyboard or the pointer, to tell whether Wine got it itself. 0.05 by default; 0 sends a stand-in for everything.
+- `--update-notice critical|normal|off`: how to tell you Tappo has an update waiting. Critical, the default, stays on screen until you dismiss it; normal goes into the notification history; off sends nothing.
+- `--update-notice-delay SECONDS`: how long the update window can be open before that notice, so an update you're already installing doesn't get one. 60 by default.
 
 To change them, run `systemctl --user edit tappo-bridge.service` and override `ExecStart`.
 

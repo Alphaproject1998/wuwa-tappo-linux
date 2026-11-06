@@ -4,6 +4,7 @@ import asyncio
 import ctypes
 import json
 import os
+import re
 import string
 import signal
 import sys
@@ -64,6 +65,11 @@ MODIFIER_KEYS = {1: (0xa4, 0x38, 0), 2: (0xa2, 0x1d, 0), 4: (0xa0, 0x2a, 0), 8: 
 SHORTCUT_NAMES = ('gameMode', 'switchScreen', 'togglePet')
 DEFAULT_SHORTCUTS = {(0, 0x76), (0, 0x77), (0, 0x78)}
 
+UPDATE_WINDOW_TITLE = '强制更新'
+UPDATE_SHOWN = re.compile(rb'\[UPDATE\] event=window_shown version="([^"]*)"')
+APP_BOOT = b'[APP] event=boot '
+LOG_TAIL = 1 << 20
+
 # Up to KEY_F12 an evdev code is its PC set 1 scan code; these need the E0 prefix instead.
 EXTENDED_SCAN_CODES = {
 	ecodes.KEY_KPENTER: 0x1c, ecodes.KEY_RIGHTCTRL: 0x1d, ecodes.KEY_KPSLASH: 0x35, ecodes.KEY_SYSRQ: 0x37,
@@ -83,6 +89,8 @@ SHAPE_BOUNDING = 0
 SHAPE_INPUT = 2
 POINTER_ROOT = 1
 ANY_PROPERTY_TYPE = 0
+CLIENT_MESSAGE = 33
+SUBSTRUCTURE_MASKS = (1 << 19) | (1 << 20)
 X_SUCCESS = 0
 ATOM_NAMES = ('WM_STATE', '_NET_WM_STATE', '_NET_WM_STATE_FULLSCREEN', '_NET_WM_PID')
 
@@ -111,6 +119,14 @@ class XWindowAttributes(ctypes.Structure):
 
 class XClassHint(ctypes.Structure):
 	_fields_ = [('res_name', ctypes.c_void_p), ('res_class', ctypes.c_void_p)]
+
+
+class XClientMessageEvent(ctypes.Structure):
+	_fields_ = [
+		('type', ctypes.c_int), ('serial', ctypes.c_ulong), ('send_event', ctypes.c_int), ('display', ctypes.c_void_p),
+		('window', ctypes.c_ulong), ('message_type', ctypes.c_ulong), ('format', ctypes.c_int),
+		('data', ctypes.c_long * 5),
+	]
 
 
 class XRRMonitorInfo(ctypes.Structure):
@@ -209,6 +225,108 @@ class Shortcuts:
 		return self.bindings
 
 
+class UpdateNotice:
+	# Every update Tappo finds is a forced one: until it's installed no tap counts and its menu has nothing but Exit.
+	# Its update window is an ordinary one, so it can open behind everything else and leave the pet looking broken.
+	def __init__(self, options):
+		self.options = options
+		self.session = None
+		self.path = None
+		self.offset = 0
+		self.partial = b''
+		self.waiting = None
+		self.notified = False
+		self.process = None
+		self.answering = None
+
+	async def check(self, session):
+		if session is not self.session:
+			await self.close()
+			self.session = session
+			self.path, self.offset, self.partial = None, 0, b''
+			self.waiting, self.notified = None, False
+		if not session:
+			return
+		self.read_log()
+		if not self.waiting:
+			await self.close()
+			return
+		version, seen = self.waiting
+		if self.notified or asyncio.get_running_loop().time() - seen < self.options.update_notice_delay:
+			return
+		self.notified = True
+		await self.show(version)
+
+	def read_log(self):
+		if not self.path:
+			found = sorted(Path(self.session.prefix).glob(
+				'drive_c/users/*/AppData/Local/com.kuro.wuwatappo*/logs/Wuwa Tappo.log'
+			))
+			if not found:
+				return
+			self.path = found[0]
+		try:
+			size = self.path.stat().st_size
+			if size < self.offset:
+				self.offset, self.partial = 0, b''
+			# Only what Tappo logged since it last started matters, and the log is never trimmed.
+			self.offset = max(self.offset, size - LOG_TAIL)
+			with self.path.open('rb') as log_file:
+				log_file.seek(self.offset)
+				data = log_file.read(size - self.offset)
+		except OSError:
+			return
+		self.offset += len(data)
+		*lines, self.partial = (self.partial + data).split(b'\n')
+		for line in lines:
+			if APP_BOOT in line:
+				self.waiting = None
+			elif shown := UPDATE_SHOWN.search(line):
+				self.waiting = (shown[1].decode(errors='replace'), asyncio.get_running_loop().time())
+				self.notified = False
+
+	async def show(self, version):
+		body = (
+			f'Tappo {version} is ready to install. Until it is, Tappo won\'t count taps or open its panel, '
+			'and its tray menu only has Exit.'
+		)
+		try:
+			self.process = await asyncio.create_subprocess_exec(
+				'notify-send', '-a', 'Wuwa Tappo', '-i', 'wuwa-tappo', '-u', self.options.update_notice,
+				'--action=show=Show the update', 'Wuwa Tappo has an update waiting', body,
+				stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+			)
+		except OSError as error:
+			log(f'could not say Tappo {version} is waiting to install: {error}')
+			return
+		log(f'Tappo {version} is waiting to install, notification sent')
+		self.answering = asyncio.create_task(self.answer(self.process))
+
+	async def answer(self, process):
+		chosen = (await process.stdout.read()).split()
+		await process.wait()
+		# Once close() has let go of the process, the session's X connection may already be closed, and Xlib crashes on a closed display.
+		if b'show' not in chosen or process is not self.process:
+			return
+		x = self.session and self.session.x
+		window = x and x.client_titled(self.session.owner_class, UPDATE_WINDOW_TITLE)
+		if window:
+			x.activate(window)
+		else:
+			log('could not find Tappo\'s update window to bring up')
+
+	async def close(self):
+		process, self.process = self.process, None
+		if not process or process.returncode is not None:
+			return
+		# SIGINT, because that is the only signal on which notify-send closes the notification it is waiting on.
+		process.send_signal(signal.SIGINT)
+		try:
+			await asyncio.wait_for(process.wait(), 2)
+		except asyncio.TimeoutError:
+			process.kill()
+
+
 def wanted_device(device, ignore):
 	if any(pattern.lower() in device.name.lower() for pattern in ignore):
 		return False
@@ -280,6 +398,8 @@ class XDisplay:
 		self.translate_coordinates = bind(
 			x11, 'XTranslateCoordinates', ctypes.c_int, pointer, window, window, ctypes.c_int, ctypes.c_int, *[pointer] * 3,
 		)
+		self.send_event = bind(x11, 'XSendEvent', ctypes.c_int, pointer, window, ctypes.c_int, ctypes.c_long, pointer)
+		self.flush = bind(x11, 'XFlush', ctypes.c_int, pointer)
 
 		# Otherwise a window closing mid-scan would end the bridge, since Xlib's default handler exits on any error.
 		self.ignore_errors = X_ERROR_HANDLER(lambda display, error: 0)
@@ -329,23 +449,45 @@ class XDisplay:
 			self.free(children)
 		return parent.value
 
-	def property_values(self, window, name):
+	def atom(self, name):
+		if name not in self.atoms:
+			self.atoms[name] = self.intern_atom(self.display, name.encode(), False)
+		return self.atoms[name]
+
+	def read_property(self, window, name, length):
 		actual_type, actual_format = ctypes.c_ulong(), ctypes.c_int()
 		count, remaining = ctypes.c_ulong(), ctypes.c_ulong()
 		data = ctypes.c_void_p()
 		status = self.get_property(
-			self.display, window, self.atoms[name], 0, 64, False, ANY_PROPERTY_TYPE, ctypes.byref(actual_type),
+			self.display, window, self.atom(name), 0, length, False, ANY_PROPERTY_TYPE, ctypes.byref(actual_type),
 			ctypes.byref(actual_format), ctypes.byref(count), ctypes.byref(remaining), ctypes.byref(data),
 		)
 		if status != X_SUCCESS or not actual_type.value:
 			return None
+		return actual_format.value, count.value, data
+
+	def property_values(self, window, name, length=64):
+		found = self.read_property(window, name, length)
+		if not found:
+			return None
+		actual_format, count, data = found
 		values = []
 		# Read as unsigned longs because Xlib returns format-32 items as C longs, 64 bits each here.
-		if actual_format.value == 32:
-			values = list(ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[:count.value])
+		if actual_format == 32:
+			values = list(ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[:count])
 		if data:
 			self.free(data)
 		return values
+
+	def text(self, window, name):
+		found = self.read_property(window, name, 256)
+		if not found:
+			return None
+		actual_format, count, data = found
+		value = ctypes.string_at(data, count).decode(errors='replace') if actual_format == 8 and data else None
+		if data:
+			self.free(data)
+		return value
 
 	def is_fullscreen(self, window):
 		return self.atoms['_NET_WM_STATE_FULLSCREEN'] in (self.property_values(window, '_NET_WM_STATE') or [])
@@ -395,6 +537,21 @@ class XDisplay:
 			if value:
 				self.free(value)
 		return window_class
+
+	def client_titled(self, owner_class, title):
+		for window in self.property_values(self.root, '_NET_CLIENT_LIST', 4096) or []:
+			if self.window_class(window) == owner_class and self.text(window, '_NET_WM_NAME') == title:
+				return window
+		return None
+
+	def activate(self, window):
+		# Source 2 is a pager, which window managers let through whatever their focus stealing prevention says.
+		message = XClientMessageEvent(
+			type=CLIENT_MESSAGE, window=window, message_type=self.atom('_NET_ACTIVE_WINDOW'), format=32,
+			data=(ctypes.c_long * 5)(2, 0, 0, 0, 0),
+		)
+		self.send_event(self.display, self.root, False, SUBSTRUCTURE_MASKS, ctypes.byref(message))
+		self.flush(self.display)
 
 	def input_areas(self, owner_class):
 		root, parent = ctypes.c_ulong(), ctypes.c_ulong()
@@ -744,6 +901,7 @@ class Session:
 async def run(options):
 	session = None
 	missing_since = None
+	notice = UpdateNotice(options) if options.update_notice != 'off' else None
 	stopping = asyncio.Event()
 
 	loop = asyncio.get_running_loop()
@@ -764,15 +922,22 @@ async def run(options):
 			missing_since = missing_since or loop.time()
 			if loop.time() - missing_since >= options.grace:
 				log(f'{options.process_name} gone, stopping bridge')
+				if notice:
+					await notice.check(None)
 				await session.stop()
 				session = None
 				missing_since = None
+
+		if notice:
+			await notice.check(session)
 
 		try:
 			await asyncio.wait_for(stopping.wait(), options.poll)
 		except asyncio.TimeoutError:
 			pass
 
+	if notice:
+		await notice.check(None)
 	if session:
 		await session.stop()
 
@@ -829,6 +994,16 @@ def parse_options():
 	parser.add_argument(
 		'--no-menu-close', action='store_true',
 		help='leave the app\'s menus open on a click outside them, which then never close for a click on a Wayland window',
+	)
+	parser.add_argument(
+		'--update-notice', choices=('critical', 'normal', 'off'), default='critical',
+		help='how to tell you the app has an update waiting, as it counts no taps until that is installed and its update '
+		'window can open behind others: critical stays on screen until dismissed, normal goes to the notification history, '
+		'off sends nothing',
+	)
+	parser.add_argument(
+		'--update-notice-delay', type=float, default=60.0,
+		help='seconds the app\'s update window can be open before the notice, so one you are already installing gets none',
 	)
 	parser.add_argument(
 		'--fullscreen-poll', type=float, default=0.5,
