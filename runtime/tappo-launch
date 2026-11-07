@@ -12,6 +12,9 @@ export __NV_X11_DISABLE_EXPLICIT_SYNC="${__NV_X11_DISABLE_EXPLICIT_SYNC:-1}"
 # With two arenas, the first time the panel opened cost about 270 MB instead of 400 MB.
 export GLIBC_TUNABLES="${GLIBC_TUNABLES:-glibc.malloc.arena_max=2}"
 
+# WebView2's GPU process gets the same dxgi fixme on every frame, 3 million lines in an evening, which buried everything else Wine said.
+export WINEDEBUG="${WINEDEBUG:-fixme-dxgi}"
+
 if [ ! -x "$runtime/bin/wine" ]; then
 	notify-send -a "Wuwa Tappo" -u critical "Wuwa Tappo" "The patched Wine runtime is missing. Run make runtime in $project."
 	exit 1

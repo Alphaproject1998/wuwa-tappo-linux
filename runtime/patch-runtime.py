@@ -42,6 +42,25 @@ WINEX11_MONITORS_UNLOCKED = 0x3429c
 WINEX11_MONITORS_DONE = 0x343a8
 WINEX11_XINERAMA_FULLSCREEN_MONITORS = 0x46020
 WINEX11_MONITORS_CAVE = 0x51c00
+WINEX11_WM_STATE_NOTIFY_BODY = 0x38164
+WINEX11_WM_STATE_NOTIFY_RESUME = 0x3816c
+WINEX11_WM_STATE_NOTIFY_PROLOGUE = bytes.fromhex('55488d87e0000000')
+WINEX11_CLIENT_CONFIG_STATE_CHECK = 0x39b70
+WINEX11_HIDDEN_CAVE = 0x51dc0
+WS_MINIMIZEBOX = 0x20000
+WINEX11_DEVICE_CHANGE_DESKTOP_CHECK = 0x4881c
+WINEX11_DEVICE_CHANGE_RESUME = 0x48824
+WINEX11_CALL_NO_PARAM_GOT = 0x6fc60
+WINEX11_HOST_PRIMARY_MONITOR_RECT = 0x12320
+WINEX11_NO_SCREENS_CAVE = 0x51e60
+WINEX11_XINERAMA_FULLSCREEN_MONITORS_BODY = 0x46024
+WINEX11_XINERAMA_FULLSCREEN_MONITORS_RESUME = 0x4602c
+WINEX11_XINERAMA_FULLSCREEN_MONITORS_PROLOGUE = bytes.fromhex('554889e54883ec40')
+WINEX11_XINERAMA_INIT = 0x46240
+WINEX11_XINERAMA_GENERATION = 0x74340
+WINEX11_DEFAULT_VISUAL_SCREEN = 0x74210
+WINEX11_GDI_DISPLAY = 0x70dc8
+WINEX11_XINERAMA_CAVE = 0x51ea0
 WINEX11_LAYERED_CHECK = 0x3b630
 WINEX11_LAYERED_ATTRIBUTES_CHECK = 0x3b63d
 WINEX11_LAYERED_MAP_NOW = 0x3b4a7
@@ -241,6 +260,83 @@ def fullscreen_monitors_sites():
 	]
 
 
+def hidden_iconic_sites():
+	cave, emit = assembler(WINEX11_HIDDEN_CAVE)
+	emit(WINEX11_WM_STATE_NOTIFY_PROLOGUE)
+	emit(bytes.fromhex('e9'), WINEX11_WM_STATE_NOTIFY_RESUME)
+	entry = WINEX11_HIDDEN_CAVE + len(cave)
+	emit(bytes.fromhex('83fa03'))
+	emit(bytes.fromhex('0f85'), WINEX11_HIDDEN_CAVE)
+	emit(bytes.fromhex('4883bff803000000'))
+	emit(bytes.fromhex('0f85'), WINEX11_HIDDEN_CAVE)
+	emit(bytes.fromhex('83bff002000001'))
+	emit(bytes.fromhex('0f85'), WINEX11_HIDDEN_CAVE)
+	emit(bytes.fromhex('83bfe801000001'))
+	emit(bytes.fromhex('0f85'), WINEX11_HIDDEN_CAVE)
+	emit(bytes.fromhex('f687a800000001'))
+	emit(bytes.fromhex('0f84'), WINEX11_HIDDEN_CAVE)
+	emit(bytes.fromhex('57565251' '4883ec08'))
+	emit(bytes.fromhex('488b7f50' '48c7c6f0ffffff' 'ba0a000000'))
+	emit(bytes.fromhex('ff15'), WINEX11_CALL_HWND_PARAM_GOT)
+	emit(bytes.fromhex('4883c408' '595a5e5f'))
+	emit(bytes.fromhex('a9') + struct.pack('<I', WS_MINIMIZEBOX))
+	emit(bytes.fromhex('0f85'), WINEX11_HIDDEN_CAVE)
+	emit(bytes.fromhex('c787f002000003000000' 'c3'))
+
+	jump = bytes.fromhex('e9') + rel32(entry, WINEX11_WM_STATE_NOTIFY_BODY + 5)
+	check = WINEX11_CLIENT_CONFIG_STATE_CHECK
+	return [
+		(WINEX11_WM_STATE_NOTIFY_BODY, WINEX11_WM_STATE_NOTIFY_PROLOGUE, jump + b'\x90' * 3),
+		(WINEX11_HIDDEN_CAVE, bytes(len(cave)), bytes(cave)),
+		(check, bytes.fromhex('4183bc24e000000001'), bytes.fromhex('4183bc24f002000001')),
+	]
+
+
+def no_screens_sites():
+	cave, emit = assembler(WINEX11_NO_SCREENS_CAVE)
+	emit(bytes.fromhex('488b5df8' '31c0' 'c9' 'c3'))
+	entry = WINEX11_NO_SCREENS_CAVE + len(cave)
+	emit(bytes.fromhex('e8'), WINEX11_HOST_PRIMARY_MONITOR_RECT)
+	emit(bytes.fromhex('89d1' '29c1'))
+	emit(bytes.fromhex('0f8e'), WINEX11_NO_SCREENS_CAVE)
+	emit(bytes.fromhex('4889d1' '48c1f920' '4889c6' '48c1fe20' '39f1'))
+	emit(bytes.fromhex('0f8e'), WINEX11_NO_SCREENS_CAVE)
+	emit(bytes.fromhex('31ff'))
+	emit(bytes.fromhex('ff15'), WINEX11_CALL_NO_PARAM_GOT)
+	emit(bytes.fromhex('e9'), WINEX11_DEVICE_CHANGE_RESUME)
+
+	site = WINEX11_DEVICE_CHANGE_DESKTOP_CHECK
+	original = bytes.fromhex('31ff') + bytes.fromhex('ff15') + rel32(WINEX11_CALL_NO_PARAM_GOT, site + 8)
+	return [
+		(site, original, bytes.fromhex('e9') + rel32(entry, site + 5) + b'\x90' * 3),
+		(WINEX11_NO_SCREENS_CAVE, bytes(len(cave)), bytes(cave)),
+	]
+
+
+def xinerama_refresh_sites():
+	cave, emit = assembler(WINEX11_XINERAMA_CAVE)
+	emit(bytes.fromhex('575652'))
+	emit(bytes.fromhex('488b05'), WINEX11_XINERAMA_GENERATION)
+	emit(bytes.fromhex('50' '4883ec08'))
+	emit(bytes.fromhex('486305'), WINEX11_DEFAULT_VISUAL_SCREEN)
+	emit(bytes.fromhex('48c1e007'))
+	emit(bytes.fromhex('488b0d'), WINEX11_GDI_DISPLAY)
+	emit(bytes.fromhex('480381e8000000' '8b701c' '8b7818'))
+	emit(bytes.fromhex('e8'), WINEX11_XINERAMA_INIT)
+	emit(bytes.fromhex('4883c408' '58'))
+	emit(bytes.fromhex('488905'), WINEX11_XINERAMA_GENERATION)
+	emit(bytes.fromhex('5a5e5f'))
+	emit(WINEX11_XINERAMA_FULLSCREEN_MONITORS_PROLOGUE)
+	emit(bytes.fromhex('e9'), WINEX11_XINERAMA_FULLSCREEN_MONITORS_RESUME)
+
+	site = WINEX11_XINERAMA_FULLSCREEN_MONITORS_BODY
+	jump = bytes.fromhex('e9') + rel32(WINEX11_XINERAMA_CAVE, site + 5)
+	return [
+		(site, WINEX11_XINERAMA_FULLSCREEN_MONITORS_PROLOGUE, jump + b'\x90' * 3),
+		(WINEX11_XINERAMA_CAVE, bytes(len(cave)), bytes(cave)),
+	]
+
+
 def overlay_map_sites():
 	cave, emit = assembler(WINEX11_OVERLAY_CAVE)
 	emit(bytes.fromhex('8b8558ffffff'))
@@ -407,6 +503,15 @@ PATCHES = {
 			# window_set_net_wm_fullscreen_monitors() sent _NET_WM_FULLSCREEN_MONITORS back to KWin for every position it took from it, so a switch between two same-sized screens bounced the stage, sometimes back where it started.
 			# Monitors that match where KWin already has the window now count as sent.
 			*fullscreen_monitors_sites(),
+			# KWin hides X11 windows as Iconic while the screens are off, and Wine undid that by remapping the stage, racing KWin's remap at wake and stranding the pet unmanaged.
+			# That Iconic is now only noted on windows Win32 can't minimize, and their moves are ignored until they show again.
+			*hidden_iconic_sites(),
+			# A sleep drops every screen, and Wine's 1024x768 stand-in left a stage off the main screen outside the desktop, so Wine withdrew it just as KWin remapped it at wake.
+			# A RandR change that leaves no screens now keeps the last layout until they're back.
+			*no_screens_sites(),
+			# Only the desktop's process hears of screen changes, so Tappo kept its startup Xinerama order and, once a wake renumbered the screens, sent KWin the wrong one for every fullscreen move.
+			# The lookup now rereads the screens each time, keeping the generation so an unchanged layout resends nothing.
+			*xinerama_refresh_sites(),
 			# X11DRV_WindowPosChanged() holds back mapping a layered window until it has layered attributes, and Tappo's toast overlay never gets any, so no toast ever showed.
 			# A click-through, always-on-top layered window now maps straight away, as Windows shows it; other layered windows still wait, Tauri's invisible helper windows among them.
 			*overlay_map_sites(),

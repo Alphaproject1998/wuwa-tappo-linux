@@ -8,6 +8,7 @@ import re
 import string
 import signal
 import sys
+import time
 from pathlib import Path
 
 import evdev
@@ -63,11 +64,17 @@ MODIFIER_BITS = {
 MODIFIER_KEYS = {1: (0xa4, 0x38, 0), 2: (0xa2, 0x1d, 0), 4: (0xa0, 0x2a, 0), 8: (0x5b, 0x5b, 1)}
 
 SHORTCUT_NAMES = ('gameMode', 'switchScreen', 'togglePet')
-DEFAULT_SHORTCUTS = {(0, 0x76), (0, 0x77), (0, 0x78)}
+DEFAULT_NAMED_SHORTCUTS = {'gameMode': (0, 0x76), 'switchScreen': (0, 0x77), 'togglePet': (0, 0x78)}
+DEFAULT_SHORTCUTS = set(DEFAULT_NAMED_SHORTCUTS.values())
+SHORTCUT_CODES = {vk: code for code, vk in SHORTCUT_KEYS.items()}
+STAGE_TITLE = 'Wuwa Tappo'
+SLEEP_JUMP = 5
 
 UPDATE_WINDOW_TITLE = '强制更新'
 UPDATE_SHOWN = re.compile(rb'\[UPDATE\] event=window_shown version="([^"]*)"')
 APP_BOOT = b'[APP] event=boot '
+SWITCH_START = b'[DISPLAY] event=switch_start '
+SWITCH_UNANSWERED = 10
 LOG_TAIL = 1 << 20
 
 # Up to KEY_F12 an evdev code is its PC set 1 scan code; these need the E0 prefix instead.
@@ -192,6 +199,10 @@ class Shortcuts:
 		self.path = None
 		self.stamp = None
 		self.bindings = DEFAULT_SHORTCUTS
+		self.named = dict(DEFAULT_NAMED_SHORTCUTS)
+
+	def binding(self, name):
+		return DEFAULT_NAMED_SHORTCUTS[name] if self.current() is DEFAULT_SHORTCUTS else self.named.get(name)
 
 	def current(self):
 		if not self.path:
@@ -208,10 +219,11 @@ class Shortcuts:
 		self.stamp = stamp
 		try:
 			saved = json.loads(self.path.read_text())
-			bindings = {
-				(saved[name]['modifiers'], saved[name]['key'])
+			named = {
+				name: (saved[name]['modifiers'], saved[name]['key'])
 				for name in SHORTCUT_NAMES if name in saved and saved[name]['key']
 			}
+			bindings = set(named.values())
 		except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
 			log(f'could not read {self.path}, keeping the shortcuts read before: {error}')
 			return self.bindings
@@ -221,6 +233,7 @@ class Shortcuts:
 		if typing:
 			log(f'sending stand-ins for {sorted(typing)}: a shortcut with no modifiers has to be an F-key')
 		self.bindings = bindings - typing
+		self.named = {name: binding for name, binding in named.items() if binding not in typing}
 		log(f'shortcuts: {sorted(self.bindings)}')
 		return self.bindings
 
@@ -259,12 +272,9 @@ class UpdateNotice:
 
 	def read_log(self):
 		if not self.path:
-			found = sorted(Path(self.session.prefix).glob(
-				'drive_c/users/*/AppData/Local/com.kuro.wuwatappo*/logs/Wuwa Tappo.log'
-			))
-			if not found:
+			self.path = tappo_log(self.session.prefix)
+			if not self.path:
 				return
-			self.path = found[0]
 		try:
 			size = self.path.stat().st_size
 			if size < self.offset:
@@ -325,6 +335,175 @@ class UpdateNotice:
 			await asyncio.wait_for(process.wait(), 2)
 		except asyncio.TimeoutError:
 			process.kill()
+
+
+def tappo_log(prefix):
+	found = sorted(Path(prefix).glob('drive_c/users/*/AppData/Local/com.kuro.wuwatappo*/logs/Wuwa Tappo.log'))
+	return found[0] if found else None
+
+
+class ScreenKeeper:
+	# Screens come back from a sleep one at a time, KWin moves windows as each one does, and Wine follows, so the pet could wake up on another screen.
+	# Tappo also always starts on the main screen here.
+	# Tappo's switch-screen shortcut is the one move Tappo itself keeps track of.
+	def __init__(self, options):
+		self.options = options
+		self.session = None
+		self.task = None
+		self.path = Path(options.screen_file).expanduser() if options.screen_file else None
+
+	def saved_home(self, session):
+		if not self.path:
+			return None
+		try:
+			homes = json.loads(self.path.read_text())
+			return homes.get(session.prefix) if isinstance(homes, dict) else None
+		except (OSError, ValueError):
+			return None
+
+	def save_home(self, session, home):
+		if not self.path:
+			return
+		try:
+			homes = json.loads(self.path.read_text())
+			if not isinstance(homes, dict):
+				homes = {}
+		except (OSError, ValueError):
+			homes = {}
+		homes[session.prefix] = home
+		try:
+			self.path.parent.mkdir(parents=True, exist_ok=True)
+			partial = self.path.with_name(f'{self.path.name}.part')
+			partial.write_text(json.dumps(homes, indent='\t') + '\n')
+			partial.replace(self.path)
+		except OSError as error:
+			log(f'could not remember the pet\'s screen in {self.path}: {error}')
+
+	def log_size(self, session):
+		path = tappo_log(session.prefix)
+		try:
+			return path, path.stat().st_size if path else 0
+		except OSError:
+			return None, 0
+
+	def switched_since(self, mark):
+		path, size = mark
+		if not path:
+			return True
+		try:
+			with path.open('rb') as log_file:
+				log_file.seek(size)
+				return SWITCH_START in log_file.read()
+		except OSError:
+			return True
+
+	async def check(self, session):
+		if session is self.session:
+			return
+		await self.close()
+		self.session = session
+		if session:
+			self.task = asyncio.create_task(self.watch(session))
+
+	async def close(self):
+		task, self.task = self.task, None
+		if not task:
+			return
+		task.cancel()
+		try:
+			await task
+		except asyncio.CancelledError:
+			pass
+
+	async def watch(self, session):
+		try:
+			x = XDisplay()
+		except OSError as error:
+			log(f'not keeping the pet on its screen: {error}')
+			return
+		try:
+			await self.keep(session, x)
+		finally:
+			x.close()
+
+	async def keep(self, session, x):
+		loop = asyncio.get_running_loop()
+		home = self.saved_home(session)
+		layout = last_stage = None
+		displaced = home is not None
+		changed = loop.time()
+		tries = unanswered = 0
+		clock = time.time() - loop.time()
+		while True:
+			await asyncio.sleep(self.options.screen_poll)
+			screens = x.named_screens()
+			# The monotonic clock stops while the PC sleeps and the wall clock doesn't, which gives a wake away even if the screens were back before this looked.
+			woke = time.time() - loop.time() - clock > SLEEP_JUMP
+			clock = time.time() - loop.time()
+			stage = x.stage(session.owner_class)
+			# The bridge's session outlives a quick restart of Tappo, so a new or returning stage is the only sign of one.
+			restarted = stage is not None and stage != last_stage
+			last_stage = stage
+			if screens != layout or woke or restarted:
+				layout, changed, tries, unanswered = screens, loop.time(), 0, 0
+				displaced = displaced or home is not None
+				continue
+			if loop.time() - changed < self.options.screen_settle:
+				continue
+			current = stage and screen_named(x.area(stage), screens)
+			if not current:
+				continue
+			# Without a change of screens, a move is the user's own, with the shortcut or the menu.
+			if not displaced or current == home:
+				if current != home:
+					log(f'the pet is on {current}')
+					self.save_home(session, current)
+				home, displaced, tries, unanswered = current, False, 0, 0
+				continue
+			if home not in {name for name, _ in screens}:
+				continue
+			binding = session.shortcuts.binding('switchScreen')
+			if binding and binding[1] not in SHORTCUT_CODES:
+				binding = None
+			if not binding or tries >= len(screens) or unanswered >= SWITCH_UNANSWERED:
+				if not binding:
+					reason = 'Tappo\'s switch-screen shortcut is unbound or not a key the bridge can send'
+				elif unanswered >= SWITCH_UNANSWERED:
+					reason = 'Tappo never answered its switch-screen shortcut'
+				else:
+					reason = 'it never came round'
+				log(f'leaving the pet on {current}, as {reason}')
+				# The saved screen stays as it was, so the next start tries again.
+				home, displaced, tries, unanswered = current, False, 0, 0
+				continue
+			if not tries and not unanswered:
+				log(f'the pet is on {current} rather than {home}, switching it back')
+			# Straight after starting, Tappo can miss the shortcut, and only a press it logged a switch for counts as a try.
+			mark = self.log_size(session)
+			await self.press(session, binding)
+			await asyncio.sleep(self.options.screen_switch_wait)
+			if self.switched_since(mark):
+				tries += 1
+			else:
+				unanswered += 1
+
+	async def press(self, session, binding):
+		modifiers, vk = binding
+		key = (vk, *scan_code(SHORTCUT_CODES[vk]))
+		needed = [modifier for bit, modifier in MODIFIER_KEYS.items() if modifiers & bit]
+		for modifier in needed:
+			await session.send_key(modifier, True, True)
+		await session.send_key(key, True, True)
+		await session.send_key(key, False, True)
+		for modifier in reversed(needed):
+			await session.send_key(modifier, False, True)
+
+
+def screen_named(area, screens):
+	if not area:
+		return None
+	best = max(screens, key=lambda screen: overlap(area, screen[1]), default=None)
+	return best[0] if best and overlap(area, best[1]) else None
 
 
 def wanted_device(device, ignore):
@@ -390,6 +569,7 @@ class XDisplay:
 		)
 		self.get_monitors = bind(xrandr, 'XRRGetMonitors', ctypes.POINTER(XRRMonitorInfo), pointer, window, ctypes.c_int, pointer)
 		self.free_monitors = bind(xrandr, 'XRRFreeMonitors', None, ctypes.POINTER(XRRMonitorInfo))
+		self.atom_name = bind(x11, 'XGetAtomName', pointer, pointer, ctypes.c_ulong)
 		self.intern_atom = bind(x11, 'XInternAtom', ctypes.c_ulong, pointer, ctypes.c_char_p, ctypes.c_int)
 		self.get_property = bind(
 			x11, 'XGetWindowProperty', ctypes.c_int, pointer, window, ctypes.c_ulong, ctypes.c_long, ctypes.c_long,
@@ -543,6 +723,41 @@ class XDisplay:
 			if self.window_class(window) == owner_class and self.text(window, '_NET_WM_NAME') == title:
 				return window
 		return None
+
+	def stage(self, owner_class):
+		root, parent = ctypes.c_ulong(), ctypes.c_ulong()
+		children = ctypes.POINTER(ctypes.c_ulong)()
+		count = ctypes.c_uint()
+		if not self.query_tree(
+			self.display, self.root, ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count),
+		):
+			return None
+		windows = list(children[:count.value])
+		if children:
+			self.free(children)
+		attributes = XWindowAttributes()
+		for window in windows:
+			if self.window_class(window) != owner_class or self.text(window, '_NET_WM_NAME') != STAGE_TITLE:
+				continue
+			if self.window_attributes(self.display, window, ctypes.byref(attributes)) and attributes.map_state == IS_VIEWABLE:
+				return window
+		return None
+
+	def named_screens(self):
+		count = ctypes.c_int()
+		monitors = self.get_monitors(self.display, self.root, 1, ctypes.byref(count))
+		if not monitors:
+			return ()
+		screens = []
+		for monitor in monitors[:count.value]:
+			name = self.atom_name(self.display, monitor.name)
+			rect = (monitor.x, monitor.y, monitor.x + monitor.width, monitor.y + monitor.height)
+			screens.append((ctypes.string_at(name).decode(errors='replace') if name else '', rect))
+			if name:
+				self.free(name)
+		self.free_monitors(monitors)
+		# Sorted by name, because the order Xwayland lists screens in changes with every wake.
+		return tuple(sorted(screens))
 
 	def activate(self, window):
 		# Source 2 is a pager, which window managers let through whatever their focus stealing prevention says.
@@ -902,6 +1117,7 @@ async def run(options):
 	session = None
 	missing_since = None
 	notice = UpdateNotice(options) if options.update_notice != 'off' else None
+	keeper = ScreenKeeper(options) if options.screen_poll > 0 else None
 	stopping = asyncio.Event()
 
 	loop = asyncio.get_running_loop()
@@ -924,12 +1140,16 @@ async def run(options):
 				log(f'{options.process_name} gone, stopping bridge')
 				if notice:
 					await notice.check(None)
+				if keeper:
+					await keeper.check(None)
 				await session.stop()
 				session = None
 				missing_since = None
 
 		if notice:
 			await notice.check(session)
+		if keeper:
+			await keeper.check(session)
 
 		try:
 			await asyncio.wait_for(stopping.wait(), options.poll)
@@ -938,6 +1158,8 @@ async def run(options):
 
 	if notice:
 		await notice.check(None)
+	if keeper:
+		await keeper.check(None)
 	if session:
 		await session.stop()
 
@@ -1004,6 +1226,25 @@ def parse_options():
 	parser.add_argument(
 		'--update-notice-delay', type=float, default=60.0,
 		help='seconds the app\'s update window can be open before the notice, so one you are already installing gets none',
+	)
+	parser.add_argument(
+		'--screen-poll', type=float, default=1.0,
+		help='seconds between checks of which screen the pet is on, so that when the screens change (a sleep, '
+		'a monitor unplugged and back) it can be put back with the app\'s switch-screen shortcut; 0 turns this off',
+	)
+	parser.add_argument(
+		'--screen-settle', type=float, default=5.0,
+		help='seconds the screens have to stay as they are after a change before the pet is put back',
+	)
+	parser.add_argument(
+		'--screen-switch-wait', type=float, default=3.0,
+		help='seconds to give each screen switch before looking where the pet went',
+	)
+	state_home = os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local' / 'state')
+	parser.add_argument(
+		'--screen-file', default=str(Path(state_home) / 'tappo-bridge' / 'screens.json'),
+		help='where to remember which screen the pet is on, so it goes back there whenever Tappo starts; '
+		'an empty string remembers it only until Tappo quits',
 	)
 	parser.add_argument(
 		'--fullscreen-poll', type=float, default=0.5,
