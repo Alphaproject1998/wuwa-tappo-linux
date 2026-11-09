@@ -564,6 +564,7 @@ class XDisplay:
 		self.window_attributes = bind(x11, 'XGetWindowAttributes', ctypes.c_int, pointer, window, pointer)
 		self.class_hint = bind(x11, 'XGetClassHint', ctypes.c_int, pointer, window, pointer)
 		self.free = bind(x11, 'XFree', ctypes.c_int, pointer)
+		self.delete_property = bind(x11, 'XDeleteProperty', ctypes.c_int, pointer, window, ctypes.c_ulong)
 		self.shape_rectangles = bind(
 			xext, 'XShapeGetRectangles', ctypes.POINTER(XRectangle), pointer, window, ctypes.c_int, pointer, pointer,
 		)
@@ -686,6 +687,24 @@ class XDisplay:
 		):
 			return None
 		return x.value, y.value, x.value + attributes.width, y.value + attributes.height
+
+	def remove_drop_targets(self, owner_class):
+		# Wine offers every window it creates as a drag and drop target, and Tappo takes no drops.
+		# Image data dragged over one leaves winex11's current_event set for good, after which that thread never handles another X event and the pet stops taking clicks.
+		root, parent = ctypes.c_ulong(), ctypes.c_ulong()
+		children = ctypes.POINTER(ctypes.c_ulong)()
+		count = ctypes.c_uint()
+		if not self.query_tree(
+			self.display, self.root, ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count),
+		):
+			return
+		windows = list(children[:count.value])
+		if children:
+			self.free(children)
+		for window in windows:
+			if self.window_class(window) == owner_class and self.property_values(window, 'XdndAware') is not None:
+				self.delete_property(self.display, window, self.atom('XdndAware'))
+		self.flush(self.display)
 
 	def holds(self, code):
 		if code in BUTTON_STATE:
@@ -1150,6 +1169,8 @@ async def run(options):
 			await notice.check(session)
 		if keeper:
 			await keeper.check(session)
+		if session and session.x and not options.keep_drop_targets:
+			session.x.remove_drop_targets(session.owner_class)
 
 		try:
 			await asyncio.wait_for(stopping.wait(), options.poll)
@@ -1250,6 +1271,10 @@ def parse_options():
 		'--fullscreen-poll', type=float, default=0.5,
 		help='seconds between checks for a fullscreen X window having the keyboard, which the helper then stands in for, '
 		'so the app\'s "Enter Game Mode in Fullscreen" can see it; 0 turns this off',
+	)
+	parser.add_argument(
+		'--keep-drop-targets', action='store_true',
+		help='leave the app\'s windows as drag and drop targets; dragging image data over one can then stop the pet taking clicks until the app restarts',
 	)
 	parser.add_argument('--poll', type=float, default=2.0, help='seconds between checks for the app')
 	parser.add_argument(
