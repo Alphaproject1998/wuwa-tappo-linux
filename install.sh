@@ -2,17 +2,24 @@
 set -euo pipefail
 
 project=$(dirname "$(realpath "$0")")
-prefix=$(realpath -m "${WINEPREFIX:-$HOME/Games/wuwa-tappo}")
+installed_prefix=$(sed -n 's|^ExecStart=.* --prefix "\(.*\)"$|\1|p' "$HOME/.config/systemd/user/tappo-bridge.service" 2> /dev/null || true)
+prefix=$(realpath -m "${WINEPREFIX:-${installed_prefix:-$HOME/Games/wuwa-tappo}}")
 webview2_installer=
 tappo_installer=
 autostart=ask
+desktop_shortcut=ask
+menu_entry=keep
+keep_installers=false
 assume_yes=false
 uninstall=false
 tappo_installed_now=false
+wine_shortcut_found=false
+desktop=$(xdg-user-dir DESKTOP 2> /dev/null || echo "$HOME/Desktop")
 
 arch_packages=(wine python-evdev base-devel curl zstd)
 fedora_packages=(wine python3-evdev gcc gcc-c++ make curl zstd)
 webview2_url='https://go.microsoft.com/fwlink/?linkid=2124701'
+webview2_download=build/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
 tappo_page='https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/en/'
 tappo_activity_config='https://api-wutheringwaves-wuwatappo.kurogames-global.com/api/common/activity-config'
 
@@ -24,14 +31,19 @@ Sets up Wuwa Tappo under the patched Wine in this folder, or brings an existing 
 Steps that are already done are skipped, so it's safe to run again.
 
 Options:
-  --prefix DIR      Wine prefix to use (default: \$WINEPREFIX, or ~/Games/wuwa-tappo)
-  --webview2 FILE   use this WebView2 standalone installer instead of downloading it
-  --tappo FILE      use this Tappo installer instead of downloading the latest one
-  --autostart       start Tappo when you log in
-  --no-autostart    don't, and remove the autostart entry if there is one
-  -y, --yes         don't ask anything, take the defaults
-  --uninstall       remove everything this installed, and offer to delete the prefix
-  -h, --help        show this
+  --prefix DIR           Wine prefix to use (default: \$WINEPREFIX, then the one already set up, then ~/Games/wuwa-tappo)
+  --webview2 FILE        use this WebView2 standalone installer instead of downloading it
+  --tappo FILE           use this Tappo installer instead of downloading the latest one
+  --autostart            start Tappo when you log in
+  --no-autostart         don't, and remove the autostart entry if there is one
+  --desktop-shortcut     put a shortcut on your desktop without asking
+  --no-desktop-shortcut  don't, and remove it if it's there
+  --no-menu-entry        keep Tappo out of the app menu (logging in still works)
+  --menu-entry           put it back in
+  --keep-installers      keep the downloaded installers in build/ instead of deleting them
+  -y, --yes              don't ask anything, take the defaults
+  --uninstall            remove everything this installed, and offer to delete the prefix
+  -h, --help             show this
 EOF
 }
 
@@ -63,7 +75,7 @@ ask() {
 }
 
 run_make() {
-	make --no-print-directory WINEPREFIX="$prefix" "$@"
+	make --no-print-directory WINEPREFIX="$prefix" DESKTOP_DIR="$desktop" MENU_ENTRY="$menu_entry" "$@"
 }
 
 tappo_running() {
@@ -156,6 +168,10 @@ check_input_group() {
 		warn "you're in the input group, but this session started before that; log out and back in so Tappo hears other apps"
 		return
 	fi
+	if ! new_setup; then
+		warn "you're not in the input group, so Tappo will only count clicks on itself; sudo usermod -aG input $USER adds you"
+		return
+	fi
 	say "The bridge reads your keyboards and mice, which needs your user in the input group."
 	echo "That lets every program you run read them too, so think about it on a shared machine."
 	if ask "Add $USER to input with sudo usermod?" y; then
@@ -174,6 +190,11 @@ tappo_installed() {
 	[ -f "$prefix/drive_c/Program Files/WuwaTappoGlobal/WuwaTappo.exe" ]
 }
 
+# Preferences only get asked about on a new setup, so a no isn't asked again on every update.
+new_setup() {
+	$tappo_installed_now || [ -z "$installed_prefix" ]
+}
+
 install_webview2() {
 	if webview2_installed; then
 		say "WebView2 is already installed"
@@ -182,12 +203,135 @@ install_webview2() {
 	local installer=$webview2_installer
 	if [ -z "$installer" ]; then
 		say "Downloading Microsoft's WebView2 standalone installer"
-		installer=build/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+		installer=$webview2_download
 		download "$webview2_url" "$installer"
 	fi
-	say "Installing WebView2, which takes a minute and shows nothing while it works"
-	run_make webview2 WEBVIEW2_INSTALLER="$(realpath "$installer")"
+	say "Installing WebView2, which takes about a minute"
+	if [ -t 1 ]; then
+		run_with_webview2_progress run_make webview2 WEBVIEW2_INSTALLER="$(realpath "$installer")"
+	else
+		run_make webview2 WEBVIEW2_INSTALLER="$(realpath "$installer")"
+	fi
 	webview2_installed || die "the WebView2 installer finished without installing WebView2"
+}
+
+# Microsoft's installer shows nothing with /silent, so the bar follows its updater's log, and make's output goes to a file so the bar keeps its line.
+run_with_webview2_progress() {
+	local output=build/webview2-install.log watcher status=0
+	python3 -I - "$prefix/drive_c/ProgramData/Microsoft/EdgeUpdate/Log/MicrosoftEdgeUpdate.log" <<'EOF' &
+import math
+import os
+import shutil
+import signal
+import sys
+import time
+
+log_path = sys.argv[1]
+# The seconds come from one install here, so a step's first line in the log moves the bar on to that step however long the last one really took.
+phases = [
+	(None, 3, "Starting Microsoft's installer"),
+	('[Install files]', 1.6, "Setting up Edge's updater"),
+	('[InstallApps]', 30.5, 'Getting ready'),
+	('[PackageCache::Put]', 3.4, 'Copying WebView2'),
+	('[Running installer]', 22.8, 'Unpacking WebView2'),
+	('[InstallerResult]', 1, 'Finishing up'),
+]
+total_seconds = sum(seconds for _, seconds, _ in phases)
+starts = []
+for index in range(len(phases)):
+	starts.append(100 * sum(seconds for _, seconds, _ in phases[:index]) / total_seconds)
+starts.append(100)
+fancy = (sys.stdout.encoding or '').lower().replace('-', '') == 'utf8'
+parent = os.getppid()
+finished = None
+
+
+def finish(signum, frame):
+	global finished
+	finished = signum == signal.SIGUSR1
+
+
+def creep(progress):
+	if progress <= 1:
+		return 0.9 * progress
+	return 0.9 + 0.09 * (1 - math.exp(1 - progress))
+
+
+def log_size():
+	try:
+		return os.path.getsize(log_path)
+	except OSError:
+		return 0
+
+
+def new_log_text():
+	try:
+		with open(log_path, 'rb') as log:
+			log.seek(offset if log_size() >= offset else 0)
+			return log.read().decode('utf-16-le', 'ignore')
+	except OSError:
+		return ''
+
+
+def draw(percent, label, end=''):
+	elapsed = int(time.monotonic() - started)
+	tail = f' {int(percent):3d}%  {label}  {elapsed // 60}:{elapsed % 60:02d}'
+	columns = shutil.get_terminal_size().columns
+	width = min(40, columns - len(tail) - 1)
+	if width < 10:
+		line = tail.strip()[:columns - 1]
+	elif fancy:
+		halves = round(percent / 100 * width * 2)
+		filled = '━' * (halves // 2) + '╸' * (halves % 2)
+		line = f'{filled}\033[2m{"━" * (width - len(filled))}\033[0m{tail}'
+	else:
+		filled = '#' * round(percent / 100 * (width - 2))
+		line = f'[{filled}{"-" * (width - 2 - len(filled))}]{tail}'
+	sys.stdout.write(f'\r{line}\033[K{end}')
+	sys.stdout.flush()
+
+
+signal.signal(signal.SIGUSR1, finish)
+signal.signal(signal.SIGUSR2, finish)
+offset = log_size()
+started = time.monotonic()
+phase = 0
+phase_started = started
+shown = 0
+while finished is None and os.getppid() == parent:
+	text = new_log_text()
+	for index in range(len(phases) - 1, phase, -1):
+		if phases[index][0] in text:
+			phase = index
+			phase_started = time.monotonic()
+			break
+	now = time.monotonic()
+	# Before the log says anything the whole minute is the estimate, which also covers a log that never shows up.
+	if phase == 0:
+		percent = 100 * creep((now - started) / total_seconds)
+	else:
+		percent = starts[phase] + (starts[phase + 1] - starts[phase]) * creep((now - phase_started) / phases[phase][1])
+	shown = max(shown, percent)
+	draw(shown, phases[phase][2])
+	time.sleep(0.25)
+if finished:
+	draw(100, 'Done', '\n')
+else:
+	sys.stdout.write('\n')
+EOF
+	watcher=$!
+	"$@" > "$output" 2>&1 || status=$?
+	if [ "$status" -eq 0 ]; then
+		kill -USR1 "$watcher" 2> /dev/null || true
+	else
+		kill -USR2 "$watcher" 2> /dev/null || true
+	fi
+	wait "$watcher" || true
+	if [ "$status" -ne 0 ]; then
+		cat "$output" >&2
+		die "Microsoft's WebView2 installer failed, see above"
+	fi
+	rm -f "$output"
 }
 
 install_tappo() {
@@ -231,13 +375,50 @@ set_up_autostart() {
 			return
 			;;
 		ask)
-			[ -f "$entry" ] || ask "Start Tappo when you log in?" n || return 0
+			[ -f "$entry" ] || { new_setup && ask "Start Tappo when you log in?" n; } || return 0
 			;;
 	esac
 	run_make autostart
 }
 
+offer_desktop_shortcut() {
+	if $wine_shortcut_found; then
+		echo "Kuro's installer put a shortcut on your desktop that starts Tappo on your system's Wine, without any of these fixes, so that's gone."
+		ask "Put one there that works?" y
+	elif new_setup && [ -d "$desktop" ]; then
+		ask "Put a shortcut to Tappo on your desktop?" y
+	else
+		return 1
+	fi
+}
+
+set_up_desktop_shortcut() {
+	case "$desktop_shortcut" in
+		no)
+			rm -f "$desktop/wuwa-tappo.desktop"
+			return
+			;;
+		ask)
+			[ -f "$desktop/wuwa-tappo.desktop" ] || offer_desktop_shortcut || return 0
+			;;
+	esac
+	run_make desktop-shortcut
+}
+
+remove_installers() {
+	local installer removed=false
+	for installer in "$webview2_download" build/WuwaTappo-global_*_x64-setup.exe; do
+		[ -f "$installer" ] || continue
+		rm -f "$installer"
+		removed=true
+	done
+	if $removed; then
+		echo "Deleted the installers it downloaded, since they're only needed to set up a new prefix."
+	fi
+}
+
 set_up_corners_exclusion() {
+	new_setup || return 0
 	local qdbus=
 	for cmd in qdbus6 qdbus-qt6 qdbus; do
 		if command -v "$cmd" > /dev/null; then
@@ -256,7 +437,7 @@ set_up_corners_exclusion() {
 
 uninstall_everything() {
 	wait_for_tappo_to_quit
-	say "Removing the bridge, menu entry, autostart entry and logout script"
+	say "Removing the bridge, menu entry, autostart entry, desktop shortcut and logout script"
 	run_make uninstall
 	if [ -d "$prefix" ] && ask "Also delete the prefix in $prefix? That deletes Tappo and everything it saved." n; then
 		[ -x build/wine-runtime/bin/wineserver ] && WINEPREFIX="$prefix" build/wine-runtime/bin/wineserver -k 2> /dev/null || true
@@ -282,6 +463,11 @@ while [ $# -gt 0 ]; do
 			;;
 		--autostart) autostart=yes ;;
 		--no-autostart) autostart=no ;;
+		--desktop-shortcut) desktop_shortcut=yes ;;
+		--no-desktop-shortcut) desktop_shortcut=no ;;
+		--menu-entry) menu_entry=yes ;;
+		--no-menu-entry) menu_entry=no ;;
+		--keep-installers) keep_installers=true ;;
 		-y | --yes) assume_yes=true ;;
 		--uninstall) uninstall=true ;;
 		-h | --help)
@@ -299,6 +485,9 @@ done
 for installer in "$webview2_installer" "$tappo_installer"; do
 	[ -z "$installer" ] || [ -f "$installer" ] || die "$installer doesn't exist"
 done
+if [ "$menu_entry" = keep ]; then
+	grep -qsx 'NoDisplay=true' "$HOME/.local/share/applications/wuwa-tappo.desktop" && menu_entry=no || menu_entry=yes
+fi
 cd "$project"
 
 if $uninstall; then
@@ -329,10 +518,15 @@ if $tappo_installed_now; then
 fi
 
 say "Installing the ole32 fix, the bridge, the menu entry and the logout script"
+if grep -qsF "\"WINEPREFIX=$prefix\"" "$desktop/Wuwa Tappo.desktop" || grep -qsaF WuwaTappoGlobal "$desktop/Wuwa Tappo.lnk"; then
+	wine_shortcut_found=true
+fi
 run_make install
 cmp -s build/ole32.dll "$prefix/drive_c/windows/system32/ole32.dll" || die "the ole32 fix didn't stick in $prefix/drive_c/windows/system32"
 set_up_autostart
+set_up_desktop_shortcut
 set_up_corners_exclusion
+$keep_installers || remove_installers
 
 say "All done"
 if ask "Start Wuwa Tappo now?" y; then
@@ -343,6 +537,6 @@ if ask "Start Wuwa Tappo now?" y; then
 		WINEPREFIX="$prefix" setsid -f runtime/tappo-launch > /dev/null 2>&1
 	fi
 	echo "It takes a few seconds to appear. Log in from its panel, and the browser hands the login back to it."
-else
+elif [ "$menu_entry" = yes ]; then
 	echo "Start Wuwa Tappo from the app menu whenever you like."
 fi

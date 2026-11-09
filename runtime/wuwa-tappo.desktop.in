@@ -7,3 +7,4 @@ Icon=wuwa-tappo
 StartupWMClass=wuwatappo.exe
 MimeType=x-scheme-handler/wuwa-buddy;
 Categories=Game;
+NoDisplay=@NO_DISPLAY@

@@ -16,8 +16,10 @@ AUTOSTART := $(HOME)/.config/autostart
 LOGOUT_SCRIPTS := $(HOME)/.config/plasma-workspace/shutdown
 ICONS := $(HOME)/.local/share/icons/hicolor
 WINE_ICON ?= $(firstword $(wildcard $(ICONS)/256x256/apps/*_WuwaTappo.0.png))
+DESKTOP_DIR ?= $(shell xdg-user-dir DESKTOP 2> /dev/null || echo "$(HOME)/Desktop")
+MENU_ENTRY ?= yes
 
-.PHONY: all runtime prefix webview2 app ole32 service corners-exclusion launcher autostart logout-script install uninstall clean
+.PHONY: all runtime prefix webview2 app ole32 service corners-exclusion wine-leftovers launcher autostart desktop-shortcut logout-script install uninstall clean
 
 all: build/tappo-input.exe.so
 
@@ -42,12 +44,16 @@ runtime: $(RUNTIME_STAMP)
 build/tappo-input.exe.so: helper/tappo-input.c $(RUNTIME_STAMP)
 	"$(CURDIR)/$(RUNTIME)/bin/winegcc" -m64 -O2 -Wall -o build/tappo-input.exe $< -luser32 -lwin32u
 
+# make app lets winemenubuilder run for Tappo's icon, and it would also hand six Windows file types to this prefix under the system's Wine.
+# Kuro's installer always puts a shortcut on the desktop, and Wine links the prefix's Desktop to the real one, so the prefix gets a folder of its own.
 prefix: $(RUNTIME_STAMP)
 	mkdir -p "$(WINEPREFIX)"
 	[ -f "$(WINEPREFIX)/system.reg" ] || $(WINE_ENV) WINEDLLOVERRIDES="mscoree=;winemenubuilder.exe=" "$(WINE)" wineboot -u
 	$(WINE_ENV) "$(WINE)" winecfg -v win10
 	$(WINE_ENV) "$(WINE)" reg add 'HKCU\Software\Wine\AppDefaults\msedgewebview2.exe' /v Version /t REG_SZ /d win8 /f
 	$(WINE_ENV) "$(WINE)" reg add 'HKCU\Software\Wine\X11 Driver' /v ScreenDepth /t REG_SZ /d 32 /f
+	$(WINE_ENV) "$(WINE)" reg add 'HKCU\Software\Wine\FileOpenAssociations' /v Enable /t REG_SZ /d N /f
+	for desktop in "$(WINEPREFIX)"/drive_c/users/*/Desktop; do [ ! -L "$$desktop" ] || { rm -f "$$desktop" && mkdir "$$desktop"; }; done
 
 webview2: $(RUNTIME_STAMP)
 	@[ -n "$(WEBVIEW2_INSTALLER)" ] || { echo 'set WEBVIEW2_INSTALLER to the WebView2 standalone installer (x64)' >&2; exit 1; }
@@ -77,19 +83,32 @@ corners-exclusion:
 	qdbus=qdbus6; command -v "$$qdbus" > /dev/null || qdbus=qdbus-qt6; command -v "$$qdbus" > /dev/null || qdbus=qdbus; \
 	"$$qdbus" org.kde.KWin /Effects org.kde.kwin.Effects.reconfigureEffect kwin4_effect_shapecorners 2> /dev/null || true
 
-launcher: $(RUNTIME_STAMP)
+wine-leftovers:
+	rm -f "$(APPLICATIONS)/wine/Programs/WuwaTappoGlobal/Wuwa Tappo.desktop" "$(HOME)/.config/menus/applications-merged/wine-Programs-WuwaTappoGlobal-Wuwa Tappo.menu" "$(HOME)/.local/share/desktop-directories/wine-Programs-WuwaTappoGlobal.directory"
+	[ ! -d "$(APPLICATIONS)/wine/Programs/WuwaTappoGlobal" ] || rmdir --ignore-fail-on-non-empty "$(APPLICATIONS)/wine/Programs/WuwaTappoGlobal"
+	! grep -qsF '"WINEPREFIX=$(WINEPREFIX)"' "$(DESKTOP_DIR)/Wuwa Tappo.desktop" || rm -f "$(DESKTOP_DIR)/Wuwa Tappo.desktop"
+	! grep -qsaF 'WuwaTappoGlobal' "$(DESKTOP_DIR)/Wuwa Tappo.lnk" || rm -f "$(DESKTOP_DIR)/Wuwa Tappo.lnk"
+	grep -lsF '"WINEPREFIX=$(WINEPREFIX)"' "$(APPLICATIONS)"/wine-extension-*.desktop | xargs -r -d '\n' rm -f
+
+launcher: $(RUNTIME_STAMP) wine-leftovers
 	mkdir -p "$(APPLICATIONS)"
-	sed -e 's|@PROJECT@|$(CURDIR)|' -e 's|@WINEPREFIX@|$(WINEPREFIX)|' runtime/wuwa-tappo.desktop.in > "$(APPLICATIONS)/wuwa-tappo.desktop"
+	sed -e 's|@PROJECT@|$(CURDIR)|' -e 's|@WINEPREFIX@|$(WINEPREFIX)|' -e 's|@NO_DISPLAY@|$(if $(filter no,$(MENU_ENTRY)),true,false)|' runtime/wuwa-tappo.desktop.in > "$(APPLICATIONS)/wuwa-tappo.desktop"
 	[ -z "$(WINE_ICON)" ] || install -Dm644 "$(WINE_ICON)" "$(ICONS)/256x256/apps/wuwa-tappo.png"
 	$(WINE_ENV) "$(WINE)" reg add 'HKCU\Software\Wine\DllOverrides' /v winemenubuilder.exe /t REG_SZ /d '' /f
-	rm -f "$(APPLICATIONS)/wine/Programs/WuwaTappoGlobal/Wuwa Tappo.desktop" "$(HOME)/.config/menus/applications-merged/wine-Programs-WuwaTappoGlobal-Wuwa Tappo.menu"
 	update-desktop-database "$(APPLICATIONS)"
 	! command -v kbuildsycoca6 > /dev/null || kbuildsycoca6 2> /dev/null
 	xdg-mime default wuwa-tappo.desktop x-scheme-handler/wuwa-buddy
 
 autostart: launcher
 	mkdir -p "$(AUTOSTART)"
-	cp "$(APPLICATIONS)/wuwa-tappo.desktop" "$(AUTOSTART)/wuwa-tappo.desktop"
+	sed -e '/^NoDisplay=/d' "$(APPLICATIONS)/wuwa-tappo.desktop" > "$(AUTOSTART)/wuwa-tappo.desktop"
+
+# Plasma and GNOME only start a desktop file from the desktop once it's executable, and GNOME also wants it marked trusted.
+desktop-shortcut: launcher
+	mkdir -p "$(DESKTOP_DIR)"
+	sed -e '/^NoDisplay=/d' "$(APPLICATIONS)/wuwa-tappo.desktop" > "$(DESKTOP_DIR)/wuwa-tappo.desktop"
+	chmod +x "$(DESKTOP_DIR)/wuwa-tappo.desktop"
+	gio set "$(DESKTOP_DIR)/wuwa-tappo.desktop" metadata::trusted true 2> /dev/null || true
 
 logout-script:
 	mkdir -p "$(LOGOUT_SCRIPTS)"
@@ -97,10 +116,10 @@ logout-script:
 
 install: ole32 service launcher logout-script
 
-uninstall:
+uninstall: wine-leftovers
 	-systemctl --user disable --now tappo-bridge.service
-	rm -f "$(UNIT_DIR)/tappo-bridge.service" "$(APPLICATIONS)/wuwa-tappo.desktop" "$(AUTOSTART)/wuwa-tappo.desktop" "$(LOGOUT_SCRIPTS)/00-wuwa-tappo-quit" "$(ICONS)/256x256/apps/wuwa-tappo.png"
-	rm -f "$(ICONS)"/*/apps/*_WuwaTappo.0.png "$(HOME)/.config/menus/applications-merged/wine-Programs-WuwaTappoGlobal-Wuwa Tappo.menu" "$(HOME)/.local/share/desktop-directories/wine-Programs-WuwaTappoGlobal.directory"
+	rm -f "$(UNIT_DIR)/tappo-bridge.service" "$(APPLICATIONS)/wuwa-tappo.desktop" "$(AUTOSTART)/wuwa-tappo.desktop" "$(DESKTOP_DIR)/wuwa-tappo.desktop" "$(LOGOUT_SCRIPTS)/00-wuwa-tappo-quit" "$(ICONS)/256x256/apps/wuwa-tappo.png"
+	rm -f "$(ICONS)"/*/apps/*_WuwaTappo.0.png
 	rm -rf "$(APPLICATIONS)/wine/Programs/WuwaTappoGlobal"
 	systemctl --user daemon-reload
 	update-desktop-database "$(APPLICATIONS)"

@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 - **It eats about 8 GB of RAM.** Nearly all of that was Wine: it gave every WebView2 process its own copy of a 355 MB DLL, and every renderer 400 MB of bookkeeping for memory it never touches. It's about 1.5 GB now, see [Memory](#memory).
 - **You can't tell what's what in a process list.** Wine renames a process whenever a program names its main thread, so Tappo showed up as `main` and its WebView2 processes as `CrRendererMain`, `CrGpuMain` and friends. They keep their own names now: `WuwaTappo.exe`, `msedgewebview2.` (Linux cuts process names at 15 characters), and Tappo's Wine server runs as `tappo-wineserver`, the bridge as `tappo-bridge` and its helper as `tappo-input.exe`. The rest, `explorer.exe`, `services.exe` and so on, are Wine's own, running in Tappo's prefix.
 - **The pet vanishes after the PC sleeps.** Your screens disconnect while it sleeps, and when they came back Wine matched each one up with another screen's free space, so Tappo moved the pet off the edge of every screen but your main one. KWin also hides every window while the screens are off, and Wine took that for the pet being minimised and fought it, which could leave the pet's window with nothing managing it at all. Either way only quitting Tappo brought it back. And a wake can renumber your screens, which Tappo's side of Wine never noticed, so switching screens afterwards sent the pet to one screen and the part you click to another. Three more Wine bugs, patched in the same copy of Wine.
-- **No proper menu entry.** You get one that starts Tappo, catches the `wuwa-buddy://` link the browser login sends back, and can start it when you log in.
+- **No proper menu entry, and a desktop shortcut that breaks things.** Kuro's installer always puts a shortcut on your desktop, and Wine turns it into one that starts Tappo on your system's Wine, without any of these fixes. If that Wine is newer, it also updates the prefix, which undoes the crash fix. Tappo's install also told your desktop to open `.reg`, `.vbs` and a few other Windows file types in Tappo's prefix. Instead you get a menu entry that starts Tappo, catches the `wuwa-buddy://` link the browser login sends back, and can start it when you log in, plus a desktop shortcut that works if you want one.
 
 ## Requirements
 
@@ -50,24 +50,35 @@ The installer checks the last two and offers to sort them out. It also downloads
 ## Setup
 
 ```
+sh -c "$(curl -sSfL https://raw.githubusercontent.com/Alphaproject1998/wuwa-tappo-linux/main/get.sh)"
+```
+
+That puts this repo in `~/.local/share/wuwa-tappo-linux` (with git if you have it, as a download if not) and runs `install.sh` from there. Running the same line again updates it. [`get.sh`](get.sh) is short if you'd rather read it first. Options for the installer go after a `--`, like `sh -c "$(curl ...)" -- --autostart`, and `TAPPO_DIR=/some/folder` in front of the whole line puts the repo somewhere else.
+
+Or clone it yourself, which is all `get.sh` does anyway:
+
+```
 git clone https://github.com/Alphaproject1998/wuwa-tappo-linux.git
 cd wuwa-tappo-linux
 ./install.sh
 ```
 
-It asks before anything that needs sudo. Kuro's installer opens partway through, so click through that, and if Wine offers to install Gecko while it sets up, let it. Kuro's installer may start Tappo when it finishes; the script closes that copy again, since the fixes aren't in yet. At the end it offers to start Tappo properly, and then you log in.
+It asks before anything that needs sudo. Kuro's installer opens partway through, so click through that, and if Wine offers to install Gecko while it sets up, let it. Kuro's installer may start Tappo when it finishes; the script closes that copy again, since the fixes aren't in yet. It also swaps the desktop shortcut Kuro's installer makes for one that works, if you want one. At the end it offers to start Tappo properly, and then you log in.
 
 Steps that are already done get skipped, so if something goes wrong halfway, fix it and run it again.
 
 `./install.sh --help` lists the options. The useful ones:
 
-- `--prefix DIR` puts the Wine prefix somewhere other than `~/Games/wuwa-tappo`.
+- `--prefix DIR` puts the Wine prefix somewhere other than `~/Games/wuwa-tappo`. Updates and `--uninstall` stick to that prefix without being told again.
 - `--tappo FILE` and `--webview2 FILE` use installers you already have instead of downloading them. Any Tappo version will do, since it updates itself.
 - `--autostart` starts Tappo when you log in. You can switch it off again on the Autostart page in System Settings.
+- `--desktop-shortcut` and `--no-desktop-shortcut` answer the desktop shortcut question before it's asked.
+- `--no-menu-entry` keeps Tappo out of your app menu. The entry is still there, hidden, because the browser login comes back through it. Updates keep it hidden, and `--menu-entry` puts it back.
+- `--keep-installers` keeps the WebView2 and Tappo installers it downloads. Otherwise they're deleted at the end, since they're only needed to set up a new prefix.
 
 Besides the prefix, it installs the `ole32` fix, the bridge as a user service, a menu entry and a logout script. The logout script quits Tappo properly when you log out, restart or shut down from Plasma, the way Windows would, instead of leaving it to get killed, so your pet's state gets saved. It's listed under Logout Scripts on the Autostart page in System Settings, and `runtime/tappo-quit` does the same thing by hand.
 
-If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from it, since the effect draws an outline round Tappo's panels.
+If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from it, since the effect draws an outline round Tappo's panels. It only asks during a new setup, so if you change your mind later, `make corners-exclusion` does the same thing.
 
 To keep Tappo off your taskbar, pager and Alt+Tab, switch off Show Taskbar Icon in its settings. You can switch it back on whenever you need it for OBS capture.
 
@@ -89,11 +100,11 @@ make install
 - `make prefix` creates the Wine prefix and sets it up for 32-bit windows. For a prefix other than `~/Games/wuwa-tappo`, pass `WINEPREFIX=/some/path` to every `make` command.
 - `make webview2` and `make app` run the two installers. The WebView2 one is the **Evergreen Standalone Installer (x64)** from Microsoft's [WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/).
 - `make install` does the rest. Run it after `make app`, because the menu entry borrows the icon Wine pulled out of the installer. Each part of it is also its own target (`ole32`, `service`, `launcher`, `logout-script`).
-- `make autostart` and `make corners-exclusion` are the optional extras.
+- `make autostart`, `make desktop-shortcut` and `make corners-exclusion` are the optional extras. `MENU_ENTRY=no` on `make install` hides the menu entry.
 
 ### Updating
 
-Quit Tappo from its tray icon first, then:
+Quit Tappo from its tray icon first, then run the `get.sh` line again. In a clone of your own, that's the same as:
 
 ```
 git pull
@@ -180,13 +191,13 @@ Everything is pinned to Arch's `wine 11.20-1`. The patches are binary patches wr
 
 ## Uninstalling
 
-Quit Tappo first, then:
+Quit Tappo first, then in the repo's folder (`~/.local/share/wuwa-tappo-linux` if you used `get.sh`):
 
 ```
 ./install.sh --uninstall
 ```
 
-That removes the bridge, the menu and autostart entries, the logout script and what Wine added to your menus when Tappo was installed. It then asks whether to delete the prefix too, which deletes Tappo and everything it saved, so the default is no. `make uninstall` is the same without the question, leaving the prefix alone. After that, delete this folder, which takes the downloaded Wine with it.
+That removes the bridge, the menu and autostart entries, the desktop shortcut, the logout script and what Wine added to your menus and file types when Tappo was installed. It then asks whether to delete the prefix too, which deletes Tappo and everything it saved, so the default is no. `make uninstall` is the same without the question, leaving the prefix alone. After that, delete this folder, which takes the downloaded Wine with it.
 
 ## About AI
 
