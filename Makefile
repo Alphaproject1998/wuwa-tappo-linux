@@ -19,7 +19,7 @@ WINE_ICON ?= $(firstword $(wildcard $(ICONS)/256x256/apps/*_WuwaTappo.0.png))
 DESKTOP_DIR ?= $(shell xdg-user-dir DESKTOP 2> /dev/null || echo "$(HOME)/Desktop")
 MENU_ENTRY ?= yes
 
-.PHONY: all runtime prefix webview2 app ole32 service corners-exclusion wine-leftovers launcher autostart desktop-shortcut logout-script install uninstall clean
+.PHONY: all runtime prefix webview2 app ole32 service corners-exclusion blur-exclusion wine-leftovers launcher autostart desktop-shortcut logout-script install uninstall clean
 
 all: build/tappo-input.exe.so
 
@@ -82,6 +82,20 @@ corners-exclusion:
 	case ",$$current," in *,wuwatappo.exe,*) ;; *) kwriteconfig6 --file kwinrc --group Round-Corners --key Exclusions "$${current:+$$current,}wuwatappo.exe" ;; esac; \
 	qdbus=qdbus6; command -v "$$qdbus" > /dev/null || qdbus=qdbus-qt6; command -v "$$qdbus" > /dev/null || qdbus=qdbus; \
 	"$$qdbus" org.kde.KWin /Effects org.kde.kwin.Effects.reconfigureEffect kwin4_effect_shapecorners 2> /dev/null || true
+
+# Better Blur's force blur covers a window's whole rectangle and ignores its X shape, and Tappo's windows are screen-sized.
+# Only the "all except these" mode.
+blur-exclusion:
+	for group in Effect-better-blur-dx Effect-blurplus; do \
+		[ "$$(kreadconfig6 --file kwinrc --group $$group --key BlurMatching 2> /dev/null)" = false ] || continue; \
+		current="$$(kreadconfig6 --file kwinrc --group $$group --key WindowClasses 2> /dev/null)"; \
+		printf '%s\n' "$$current" | grep -qxF wuwatappo.exe && continue; \
+		kwriteconfig6 --file kwinrc --group $$group --key WindowClasses "$$(printf '%s\n%s' "$$current" wuwatappo.exe | sed '/./,$$!d')"; \
+	done; \
+	qdbus=qdbus6; command -v "$$qdbus" > /dev/null || qdbus=qdbus-qt6; command -v "$$qdbus" > /dev/null || qdbus=qdbus; \
+	for effect in better_blur_dx forceblur forceblur_x11; do \
+		"$$qdbus" org.kde.KWin /Effects org.kde.kwin.Effects.reconfigureEffect $$effect 2> /dev/null || true; \
+	done
 
 wine-leftovers:
 	rm -f "$(APPLICATIONS)/wine/Programs/WuwaTappoGlobal/Wuwa Tappo.desktop" "$(HOME)/.config/menus/applications-merged/wine-Programs-WuwaTappoGlobal-Wuwa Tappo.menu" "$(HOME)/.local/share/desktop-directories/wine-Programs-WuwaTappoGlobal.directory"

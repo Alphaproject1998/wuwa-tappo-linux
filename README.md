@@ -82,7 +82,9 @@ If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from
 
 To keep Tappo off your taskbar, pager and Alt+Tab, switch off Show Taskbar Icon in its settings. You can switch it back on whenever you need it for OBS capture.
 
-If you're using any force blur KWin effects, like `kwin-effects-force-blur`, make sure to add an exclusion for the class `wuwatappo.exe` otherwise a blur will cover your entire screen
+If you're using any force blur KWin effects, like `kwin-effects-forceblur` or `kwin-effects-better-blur-dx`, make sure to add an exclusion for the class `wuwatappo.exe` otherwise a blur will cover your entire screen
+
+The installer offers that exclusion for Better Blur and Better Blur DX when they're set to blur every window except the listed ones, on updates as well, and `make blur-exclusion` does the same thing. Doing it by hand, the class has to be `wuwatappo.exe` exactly, all lowercase, since the list is matched case for case.
 
 ### By hand
 
@@ -100,7 +102,7 @@ make install
 - `make prefix` creates the Wine prefix and sets it up for 32-bit windows. For a prefix other than `~/Games/wuwa-tappo`, pass `WINEPREFIX=/some/path` to every `make` command.
 - `make webview2` and `make app` run the two installers. The WebView2 one is the **Evergreen Standalone Installer (x64)** from Microsoft's [WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/).
 - `make install` does the rest. Run it after `make app`, because the menu entry borrows the icon Wine pulled out of the installer. Each part of it is also its own target (`ole32`, `service`, `launcher`, `logout-script`).
-- `make autostart`, `make desktop-shortcut` and `make corners-exclusion` are the optional extras. `MENU_ENTRY=no` on `make install` hides the menu entry.
+- `make autostart`, `make desktop-shortcut`, `make corners-exclusion` and `make blur-exclusion` are the optional extras. `MENU_ENTRY=no` on `make install` hides the menu entry.
 
 ### Updating
 

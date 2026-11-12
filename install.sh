@@ -417,22 +417,38 @@ remove_installers() {
 	fi
 }
 
+kwin_effect_loaded() {
+	local cmd
+	for cmd in qdbus6 qdbus-qt6 qdbus; do
+		command -v "$cmd" > /dev/null || continue
+		[ "$("$cmd" org.kde.KWin /Effects org.kde.kwin.Effects.isEffectLoaded "$1" 2> /dev/null)" = true ]
+		return
+	done
+	return 1
+}
+
 set_up_corners_exclusion() {
 	new_setup || return 0
-	local qdbus=
-	for cmd in qdbus6 qdbus-qt6 qdbus; do
-		if command -v "$cmd" > /dev/null; then
-			qdbus="$cmd"
-			break
-		fi
-	done
-	[ -n "$qdbus" ] || return 0
-	[ "$("$qdbus" org.kde.KWin /Effects org.kde.kwin.Effects.isEffectLoaded kwin4_effect_shapecorners 2> /dev/null)" = true ] || return 0
+	kwin_effect_loaded kwin4_effect_shapecorners || return 0
 	case ",$(kreadconfig6 --file kwinrc --group Round-Corners --key Exclusions 2> /dev/null)," in
 		*,wuwatappo.exe,*) return ;;
 	esac
 	ask "Rounded Corners is on, and it draws an outline round Tappo's panels. Exclude Tappo from it?" y || return 0
 	run_make corners-exclusion
+}
+
+# No new_setup gate, since a no here leaves the whole screen blurred whenever Tappo runs.
+set_up_blur_exclusion() {
+	local effect group
+	for effect in better_blur_dx:Effect-better-blur-dx forceblur:Effect-blurplus forceblur_x11:Effect-blurplus; do
+		group=${effect#*:}
+		kwin_effect_loaded "${effect%%:*}" || continue
+		[ "$(kreadconfig6 --file kwinrc --group "$group" --key BlurMatching 2> /dev/null)" = false ] || continue
+		kreadconfig6 --file kwinrc --group "$group" --key WindowClasses 2> /dev/null | grep -qxF wuwatappo.exe && continue
+		ask "Better Blur is set to blur every window it isn't told to skip, and since Tappo's windows cover the whole screen, everything behind them gets blurred. Exclude Tappo from it?" y || return 0
+		run_make blur-exclusion
+		return
+	done
 }
 
 uninstall_everything() {
@@ -526,6 +542,7 @@ cmp -s build/ole32.dll "$prefix/drive_c/windows/system32/ole32.dll" || die "the 
 set_up_autostart
 set_up_desktop_shortcut
 set_up_corners_exclusion
+set_up_blur_exclusion
 $keep_installers || remove_installers
 
 say "All done"
