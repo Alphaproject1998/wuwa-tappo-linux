@@ -15,6 +15,12 @@ export GLIBC_TUNABLES="${GLIBC_TUNABLES:-glibc.malloc.arena_max=2}"
 # WebView2's GPU process gets the same dxgi fixme on every frame, 3 million lines in an evening, which buried everything else Wine said.
 export WINEDEBUG="${WINEDEBUG:-fixme-dxgi}"
 
+# Plasma's launcher already sends Tappo's output to the journal, but most others drop it, and report.py looks for it there.
+# A terminal keeps it, for running Tappo by hand.
+if [ -z "$JOURNAL_STREAM" ] && [ ! -t 2 ] && command -v systemd-cat > /dev/null; then
+	exec > >(exec systemd-cat --level-prefix=false -t wuwa-tappo) 2>&1
+fi
+
 if [ ! -x "$runtime/bin/wine" ]; then
 	notify-send -a "Wuwa Tappo" -u critical "Wuwa Tappo" "The patched Wine runtime is missing. Run make runtime in $project."
 	exit 1

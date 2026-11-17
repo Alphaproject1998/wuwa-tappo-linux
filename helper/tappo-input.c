@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <winternl.h>
 #include <ntuser.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,9 +22,16 @@ struct window_search {
 	HWND found;
 };
 
+struct process {
+	DWORD pid;
+	char name[64];
+};
+
 static BOOL verbose;
 static BOOL hardware;
 static HWND stand_in;
+static struct process processes[256];
+static int process_count;
 
 static void send_key(WORD vk, WORD scan, BOOL extended, BOOL down, BOOL as_hardware)
 {
@@ -219,18 +227,136 @@ static void handle_line(char *line)
 	fprintf(stderr, "ignored: %s", line);
 }
 
+static const char *utf8(const WCHAR *text, char *buffer, int size)
+{
+	if (!WideCharToMultiByte(CP_UTF8, 0, text, -1, buffer, size, NULL, NULL)) buffer[0] = 0;
+	return buffer;
+}
+
+static void load_processes(void)
+{
+	PROCESSENTRY32W entry;
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	BOOL more;
+
+	if (snapshot == INVALID_HANDLE_VALUE) return;
+	entry.dwSize = sizeof(entry);
+	for (more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
+		if (process_count == sizeof(processes) / sizeof(processes[0])) break;
+		processes[process_count].pid = entry.th32ProcessID;
+		utf8(entry.szExeFile, processes[process_count].name, sizeof(processes[process_count].name));
+		process_count++;
+	}
+	CloseHandle(snapshot);
+}
+
+static const char *process_name(DWORD pid)
+{
+	int i;
+
+	for (i = 0; i < process_count; i++) {
+		if (processes[i].pid == pid) return processes[i].name;
+	}
+	return "?";
+}
+
+static void print_rect(const char *label, const RECT *rect)
+{
+	printf("%s%d,%d %dx%d", label, (int)rect->left, (int)rect->top, (int)(rect->right - rect->left), (int)(rect->bottom - rect->top));
+}
+
+static BOOL CALLBACK print_monitor(HMONITOR monitor, HDC hdc, RECT *clip, LPARAM lparam)
+{
+	MONITORINFOEXW info;
+	DEVMODEW mode;
+	char device[64];
+	const RECT *area = &info.rcMonitor, *work = &info.rcWork;
+
+	memset(&info, 0, sizeof(info));
+	info.cbSize = sizeof(info);
+	if (!GetMonitorInfoW(monitor, (MONITORINFO *)&info)) return TRUE;
+
+	printf("Monitor %s%s: ", utf8(info.szDevice, device, sizeof(device)), info.dwFlags & MONITORINFOF_PRIMARY ? " (primary)" : "");
+	print_rect("", area);
+	print_rect(", work area ", work);
+	memset(&mode, 0, sizeof(mode));
+	mode.dmSize = sizeof(mode);
+	if (EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode)) {
+		printf(", mode %ux%u at %u Hz", (unsigned)mode.dmPelsWidth, (unsigned)mode.dmPelsHeight, (unsigned)mode.dmDisplayFrequency);
+	}
+	// Each screen getting another's work area is how Wine's stale display links showed after a sleep, and it pushed the pet off screen.
+	if (work->left < area->left || work->top < area->top || work->right > area->right || work->bottom > area->bottom ||
+		work->right <= work->left || work->bottom <= work->top) {
+		printf(", and the work area isn't inside it");
+	}
+	printf("\n");
+	return TRUE;
+}
+
+static BOOL CALLBACK print_window(HWND hwnd, LPARAM lparam)
+{
+	WCHAR text[256];
+	char class_name[256], title[512];
+	DWORD pid = 0;
+	RECT rect;
+
+	if (!GetClassNameW(hwnd, text, 256)) text[0] = 0;
+	utf8(text, class_name, sizeof(class_name));
+	if (lparam && !strcmp(class_name, "IME")) return TRUE;
+	// InternalGetWindowText doesn't send the window a message, so a hung Tappo can't hang this as well.
+	if (!InternalGetWindowText(hwnd, text, 256)) text[0] = 0;
+	utf8(text, title, sizeof(title));
+	GetWindowThreadProcessId(hwnd, &pid);
+	SetRectEmpty(&rect);
+	GetWindowRect(hwnd, &rect);
+
+	printf("%s%p %s \"%s\" \"%s\" %s ", lparam ? "  " : "Foreground: ", hwnd, process_name(pid), class_name, title, IsWindowVisible(hwnd) ? "visible" : "hidden");
+	print_rect("", &rect);
+	printf(
+		" style %#x exstyle %#x owner %p\n", (unsigned)GetWindowLongW(hwnd, GWL_STYLE), (unsigned)GetWindowLongW(hwnd, GWL_EXSTYLE),
+		GetWindow(hwnd, GW_OWNER)
+	);
+	return TRUE;
+}
+
+static void print_state(void)
+{
+	HWND foreground = GetForegroundWindow();
+	POINT cursor;
+
+	load_processes();
+	printf(
+		"DPI %u, virtual screen %d,%d %dx%d\n", (unsigned)GetDpiForSystem(), GetSystemMetrics(SM_XVIRTUALSCREEN),
+		GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)
+	);
+	EnumDisplayMonitors(NULL, NULL, print_monitor, 0);
+	if (GetCursorPos(&cursor)) printf("Cursor: %d,%d\n", (int)cursor.x, (int)cursor.y);
+	if (foreground) print_window(foreground, 0);
+	else printf("Foreground: none\n");
+	printf("Top-level windows:\n");
+	EnumWindows(print_window, 1);
+	fflush(stdout);
+}
+
 int main(int argc, char **argv)
 {
 	char line[128];
+	BOOL state = FALSE;
 	int i;
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--verbose")) verbose = TRUE;
 		else if (!strcmp(argv[i], "--hardware")) hardware = TRUE;
+		else if (!strcmp(argv[i], "--state")) state = TRUE;
 	}
 
 	// The bridge works in X pixels, which a prefix set to another DPI would otherwise scale.
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+	if (state) {
+		print_state();
+		return 0;
+	}
 
 	while (fgets(line, sizeof(line), stdin)) handle_line(line);
 	return 0;

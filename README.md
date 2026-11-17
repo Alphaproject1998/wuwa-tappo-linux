@@ -176,6 +176,12 @@ What's left is mostly WebView2's seven renderers, one per window including the f
 - The pet's state can reset when Tappo is killed rather than quit. Quitting from the tray or logging out of Plasma keeps it, but a shutdown that skips Plasma, such as `systemctl poweroff` from a terminal, still kills it.
 - Kuro's login page doesn't like ad blockers or any other filtering. If signing in fails, open the login link in a clean browser with no extensions. Thanks to timurinal for finding that one.
 
+## Reporting a bug
+
+If something breaks, run `./report.py` in this folder, then open an issue with what you did and what happened, and attach the file it makes. It gathers what I'd otherwise have to ask for: your distro, desktop, GPU and screens, how the prefix and the patched Wine are set up, Tappo's settings and windows, what's running, and the recent logs from Tappo, Wine and the bridge. Your Kuro account name and ID, username, home folder, host name, emails and IP addresses come out on the way. It's plain text, so have a read before you upload it, and `--redact WORD` takes out anything else. It isn't tied to KDE or Arch either: on any distro and desktop it collects what it can find there, which is exactly what I need when it's one I can't test. If the problem is happening right now, run it while it is; if it happened before a restart, `--since yesterday` reaches back further. When it finishes it lists anything that looks wrong, and quite often that's the whole answer. It also offers to open a new issue with its summary already filled in, and `./report.py --help` has the rest.
+
+To go through the logs yourself, Tappo logs to `drive_c/users/<you>/AppData/Local/com.kuro.wuwatappo.global/logs` in the prefix, and `journalctl --user -u tappo-bridge` shows the bridge.
+
 ## Contributing
 
 Help is very welcome, whether that's a bug report, a test on a setup I don't have or a PR. The things I can't check myself:
@@ -184,8 +190,6 @@ Help is very welcome, whether that's a bug report, a test on a setup I don't hav
 - Intel graphics.
 - Distros other than Arch and Fedora, as long as they can run Arch's Wine package.
 - Newer Wine. Each new build means finding the patch sites again, and getting the fixes into Wine itself would make most of this repo unnecessary.
-
-If something breaks, open an issue with what you ran and what happened. Tappo logs to `drive_c/users/<you>/AppData/Local/com.kuro.wuwatappo.global/logs` in the prefix, and `journalctl --user -u tappo-bridge` shows the bridge.
 
 ## Wine version
 

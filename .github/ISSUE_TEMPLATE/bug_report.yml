@@ -1,0 +1,57 @@
+name: Something's broken
+description: Tappo, the bridge or the installer isn't doing what it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting it. Before anything else, run this in your `wuwa-tappo-linux` folder:
+
+        ```
+        ./report.py
+        ```
+
+        It writes one text file with everything I'd otherwise have to ask you for: your distro, desktop, GPU and screens, how the prefix and the patched Wine are set up, what's running, and the recent logs from Tappo, Wine and the bridge. Your Kuro account name and ID, username, home folder, host name, emails and IP addresses come out on the way. It's plain text, so have a read before you upload it.
+
+        If the problem is happening right now, run it while it is. When it finishes it lists anything that looks wrong, and that can be the whole answer.
+  - type: dropdown
+    id: area
+    attributes:
+      label: What's it about
+      description: Pick whatever's closest, or leave it.
+      multiple: true
+      options:
+        - Installing or updating
+        - Taps not counting
+        - The pet's window (black, flickering, in the wrong place, gone)
+        - Clicking or dragging the pet
+        - Panels or logging in
+        - Fullscreen games and Game Mode
+        - Taskbar entry or OBS capture
+        - After the PC sleeps or a screen changes
+        - Tray icon or menu
+        - Memory or performance
+        - Something else
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen
+      description: The steps, if you know them. "Happens after a few hours" helps too.
+  - type: textarea
+    id: report
+    attributes:
+      label: Report file
+      description: Drag the file `./report.py` made in here.
+  - type: textarea
+    id: system
+    attributes:
+      label: report.py summary
+      description: "`./report.py` fills this in if you let it open this page. If it didn't, paste the Summary from the top of the report, or leave it empty if you didn't run it."
+      render: text

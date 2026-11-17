@@ -66,7 +66,7 @@ app: $(RUNTIME_STAMP)
 # Setting up a prefix queues a stock ole32 to replace the in-use one at the next session start, so start one before copying.
 ole32: $(RUNTIME_STAMP)
 	python3 -I ole32/patch-ole32.py $(RUNTIME)/lib/wine/x86_64-windows/ole32.dll build/ole32.dll $(OLE32_SHA256)
-	-WINEPREFIX="$(WINEPREFIX)" "$(WINESERVER)" -k 2> /dev/null
+	WINEPREFIX="$(WINEPREFIX)" "$(WINESERVER)" -k 2> /dev/null || true
 	$(WINE_ENV) "$(WINE)" reg add 'HKCU\Software\Wine\AppDefaults\WuwaTappo.exe\DllOverrides' /v ole32 /t REG_SZ /d native,builtin /f
 	cp build/ole32.dll "$(WINEPREFIX)/drive_c/windows/system32/ole32.dll"
 
@@ -131,7 +131,7 @@ logout-script:
 install: ole32 service launcher logout-script
 
 uninstall: wine-leftovers
-	-systemctl --user disable --now tappo-bridge.service
+	systemctl --user disable --now tappo-bridge.service 2> /dev/null || true
 	rm -f "$(UNIT_DIR)/tappo-bridge.service" "$(APPLICATIONS)/wuwa-tappo.desktop" "$(AUTOSTART)/wuwa-tappo.desktop" "$(DESKTOP_DIR)/wuwa-tappo.desktop" "$(LOGOUT_SCRIPTS)/00-wuwa-tappo-quit" "$(ICONS)/256x256/apps/wuwa-tappo.png"
 	rm -f "$(ICONS)"/*/apps/*_WuwaTappo.0.png
 	rm -rf "$(APPLICATIONS)/wine/Programs/WuwaTappoGlobal"

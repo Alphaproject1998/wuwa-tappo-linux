@@ -543,4 +543,5 @@ def main():
 	print(f'patched {len(PATCHES)} files in {runtime}')
 
 
-main()
+if __name__ == '__main__':
+	main()
