@@ -22,6 +22,7 @@ https://github.com/user-attachments/assets/b3ad5a2c-d901-4bc0-a26e-a653fe1cf484
 - **"Enter Game Mode in Fullscreen" never kicks in.** Tappo checks whether the window in front covers a screen, but the only windows Wine knows about are its own, so as far as Tappo could tell nothing fullscreen was ever in front. While a fullscreen app has the keyboard, the bridge puts an invisible window the size of that screen in front for Wine, which is all Tappo looks at.
 - **It sits in a black box.** Wine draws Tappo into windows with no alpha channel, so everything that should be see-through arrives as black. The prefix is set up so Wine gives everything in it 32-bit windows instead, and the transparency comes through the same as on Windows, soft edges included.
 - **No capitals in text boxes, white flashes and blinking when you drag the pet, a resize cursor over the whole settings panel, a tray icon that ignores clicks, a screen switch that blacks the screen out, steals focus from the app you're in and sometimes bounces the pet straight back, and none of Tappo's pop-up messages ever showing.** All Wine bugs, fixed by patching a private copy of Wine that only Tappo uses. Your system Wine isn't touched.
+- **It hides behind fullscreen games.** On Windows the pet stays on top of a borderless game, which is what Game Mode is for. On Linux the window manager keeps a focused fullscreen window above every window it manages, so the pet and its messages sat behind the game. The patched Wine keeps Tappo's always-on-top windows out of the window manager's hands, the way menus and tooltips already are, and every compositor draws those above everything. That also keeps them off the taskbar, so for Show Taskbar Icon the bridge puts a copy of the pet there instead, see [The bridge](#the-bridge).
 - **The panels lag behind.** On NVIDIA, Wine copies each frame of a panel before it has finished arriving, so a tab or button shows its change late, or not until you move the mouse. The launcher turns off explicit sync in NVIDIA's EGL for Tappo only (`__NV_X11_DISABLE_EXPLICIT_SYNC=1`), so each frame is finished before Wine copies it.
 - **It eats about 8 GB of RAM.** Nearly all of that was Wine: it gave every WebView2 process its own copy of a 355 MB DLL, and every renderer 400 MB of bookkeeping for memory it never touches. It's about 1.5 GB now, see [Memory](#memory).
 - **You can't tell what's what in a process list.** Wine renames a process whenever a program names its main thread, so Tappo showed up as `main` and its WebView2 processes as `CrRendererMain`, `CrGpuMain` and friends. They keep their own names now: `WuwaTappo.exe`, `msedgewebview2.` (Linux cuts process names at 15 characters), and Tappo's Wine server runs as `tappo-wineserver`, the bridge as `tappo-bridge` and its helper as `tappo-input.exe`. The rest, `explorer.exe`, `services.exe` and so on, are Wine's own, running in Tappo's prefix.
@@ -74,13 +75,14 @@ Steps that are already done get skipped, so if something goes wrong halfway, fix
 - `--autostart` starts Tappo when you log in. You can switch it off again on the Autostart page in System Settings.
 - `--desktop-shortcut` and `--no-desktop-shortcut` answer the desktop shortcut question before it's asked.
 - `--no-menu-entry` keeps Tappo out of your app menu. The entry is still there, hidden, because the browser login comes back through it. Updates keep it hidden, and `--menu-entry` puts it back.
+- `--no-above-fullscreen` lets fullscreen games cover the pet again, and Show Taskbar Icon then lists Tappo itself rather than the bridge's copy. Updates keep that too, and `--above-fullscreen` brings the pet back on top. Switching rebuilds the patched Wine, which takes a few seconds.
 - `--keep-installers` keeps the WebView2 and Tappo installers it downloads. Otherwise they're deleted at the end, since they're only needed to set up a new prefix.
 
 Besides the prefix, it installs the `ole32` fix, the bridge as a user service, a menu entry and a logout script. The logout script quits Tappo properly when you log out, restart or shut down from Plasma, the way Windows would, instead of leaving it to get killed, so your pet's state gets saved. It's listed under Logout Scripts on the Autostart page in System Settings, and `runtime/tappo-quit` does the same thing by hand.
 
 If you use the Rounded Corners KWin effect, it also offers to exclude Tappo from it, since the effect draws an outline round Tappo's panels. It only asks during a new setup, so if you change your mind later, `make corners-exclusion` does the same thing.
 
-To keep Tappo off your taskbar, pager and Alt+Tab, switch off Show Taskbar Icon in its settings. You can switch it back on whenever you need it for OBS capture.
+To keep Tappo off your taskbar and pager, switch off Show Taskbar Icon in its settings. You can switch it back on whenever you need it for OBS capture: the entry it gets is the bridge's copy of the pet, which is the window to pick in OBS, and the pet still stays above fullscreen games either way.
 
 If you're using any force blur KWin effects, like `kwin-effects-forceblur` or `kwin-effects-better-blur-dx`, make sure to add an exclusion for the class `wuwatappo.exe` otherwise a blur will cover your entire screen
 
@@ -98,7 +100,7 @@ make app TAPPO_INSTALLER=$HOME/Downloads/WuwaTappo-global_1.0.2_x64-setup.exe
 make install
 ```
 
-- `make runtime` downloads Arch's `wine-11.20-1` package (about 80 MB), checks its hash and patches it into `build/wine-runtime`.
+- `make runtime` downloads Arch's `wine-11.20-1` package (about 80 MB), checks its hash and patches it into `build/wine-runtime`. `ABOVE_FULLSCREEN=no` builds it without the patch that keeps the pet above fullscreen games, and the choice is saved in `build/above-fullscreen`, so later runs keep it.
 - `make prefix` creates the Wine prefix and sets it up for 32-bit windows. For a prefix other than `~/Games/wuwa-tappo`, pass `WINEPREFIX=/some/path` to every `make` command.
 - `make webview2` and `make app` run the two installers. The WebView2 one is the **Evergreen Standalone Installer (x64)** from Microsoft's [WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/).
 - `make install` does the rest. Run it after `make app`, because the menu entry borrows the icon Wine pulled out of the installer. Each part of it is also its own target (`ole32`, `service`, `launcher`, `logout-script`).
@@ -133,6 +135,8 @@ It keeps the pet on its screen when your screens change, after a sleep or a moni
 
 It also stands in for fullscreen apps, for Tappo's "Enter Game Mode in Fullscreen". Tappo goes by the window Wine has in front, which is never a Linux app, so while a fullscreen X window has the keyboard, the bridge's helper puts a window of its own in front for Wine, sized to that screen. Wine never hands it to Xwayland, so it can't show up or take focus. Switch to something windowed and it shrinks, so Tappo leaves game mode again, and if you click into Tappo it steps aside.
 
+And it gives Show Taskbar Icon something to show. The patched Wine keeps the pet away from the window manager so it can stay over fullscreen games, and the taskbar only lists windows the window manager has, so when Tappo asks for an entry, the bridge opens an ordinary window that copies the pet as it draws. That copy is what the taskbar and OBS's window capture see, while the real pet goes invisible in front of it. When a fullscreen game covers the copy, the real pet shows again, over the game. The copy, and so the pet, stays on the virtual desktop it opened on, as a window with a taskbar entry does on Windows.
+
 Controllers don't go through the bridge at all. Tappo reads them itself through XInput, and Wine passes the pad's buttons on whichever window has focus, so controller presses count while you're playing, the same as on Windows.
 
 Options (`python3 bridge/tappo-bridge.py --help` has the full list):
@@ -142,6 +146,9 @@ Options (`python3 bridge/tappo-bridge.py --help` has the full list):
 - `--no-shortcuts`: send stand-ins for Tappo's shortcuts too. They then only work while one of its windows has the keyboard.
 - `--no-menu-close`: leave Tappo's menu open when you click outside it. A click on a Wayland window then never closes it.
 - `--fullscreen-poll SECONDS`: how often to check whether a fullscreen app has the keyboard, for "Enter Game Mode in Fullscreen". 0.5 by default; 0 turns that off.
+- `--mirror-poll SECONDS`: how often to look again for Tappo asking for a taskbar entry and for a fullscreen window over the copy, on top of what Xwayland reports as it happens. 1 by default; 0 turns the copy off, so Show Taskbar Icon does nothing.
+- `--mirror-settle SECONDS`: how long the copy stays invisible before it takes over from the pet, when it first opens and when it comes back after Show Desktop, so your window animations have finished first. 1 by default; raise it if the pet blinks as Show Taskbar Icon comes on.
+- `--no-pin-script`: don't load `bridge/pin-copy.js` into KWin. While it runs, the bridge has KWin load that small script to tell it when a fullscreen window has the copy covered, so the real pet can show over it. The bridge can't see that for itself with Wayland apps, nor with any app when the copy is on another virtual desktop. The script lives in KWin's memory under its own name and goes when the bridge stops, so your window rules and other scripts are left alone. Without it, fullscreen Wayland apps cover the pet, and a fullscreen game on another virtual desktop brings the pet there too.
 - `--ignore NAME`: skip input devices whose name contains NAME. Repeatable; the default skips YubiKeys.
 - `--hardware-input`: inject through Wine's private hardware-input call, so Tappo can't tell the presses were injected.
 - `--cursor-poll SECONDS`: how often to check whether the pointer has left every X window, 0.1 by default. 0 stops the bridge moving Wine's cursor at all.
@@ -174,6 +181,8 @@ What's left is mostly WebView2's seven renderers, one per window including the f
 - While your pointer is over other apps, Tappo sees the cursor parked just clear of the X windows, not where it really is.
 - "Enter Game Mode in Fullscreen" only notices apps that run through Xwayland, which takes in games under Proton or Wine and many native ones. A fullscreen Wayland app, like a video in Firefox, still looks windowed to Tappo, because nothing outside KWin can see it.
 - The pet's state can reset when Tappo is killed rather than quit. Quitting from the tray or logging out of Plasma keeps it, but a shutdown that skips Plasma, such as `systemctl poweroff` from a terminal, still kills it.
+- While the pet is over a fullscreen game, your compositor has to draw the game in with it instead of sending it straight to the screen, the same as with any overlay. Hiding the pet with its shortcut doesn't help, since Tappo only hides it inside its window and the window stays over the screen. If it costs you frames, switch the pet to another screen while you play (F8 out of the box), or run the installer with `--no-above-fullscreen` so games cover it again.
+- With Show Taskbar Icon on, a fullscreen Wayland app, like a video in Firefox, covers the pet everywhere but KDE. The bridge can only see Xwayland's windows, and on KDE it hears about the rest from the script it loads into KWin (see `--no-pin-script`).
 - Kuro's login page doesn't like ad blockers or any other filtering. If signing in fails, open the login link in a clean browser with no extensions. Thanks to timurinal for finding that one.
 
 ## Reporting a bug

@@ -66,6 +66,21 @@ WINEX11_LAYERED_ATTRIBUTES_CHECK = 0x3b63d
 WINEX11_LAYERED_MAP_NOW = 0x3b4a7
 WINEX11_OVERLAY_CAVE = 0x51c80
 WS_EX_OVERLAY = 0x80028
+WINEX11_IS_WINDOW_MANAGED = 0x35040
+WINEX11_IS_WINDOW_MANAGED_BODY = 0x35048
+WINEX11_IS_WINDOW_MANAGED_PROLOGUE = bytes.fromhex('554889e54883c480')
+WINEX11_UPDATE_NET_WM_STATES = 0x34650
+WINEX11_ADD_TAB_UPDATE_STATES = 0x3c64c
+WINEX11_DELETE_TAB_UPDATE_STATES = 0x3c724
+WINEX11_X_INTERN_ATOM_GOT = 0x6fd98
+WINEX11_X_CHANGE_PROPERTY_GOT = 0x6fe18
+WINEX11_X_DELETE_PROPERTY_GOT = 0x6f810
+WINEX11_X_FLUSH_GOT = 0x6fb80
+WINEX11_UNMANAGED_CAVE = 0x51cc0
+WINEX11_TAB_CAVE = 0x51d00
+WS_EX_TOPMOST_NOACTIVATE = 0x8000008
+XA_CARDINAL = 6
+TASKBAR_TAB_PROPERTY = b'_WINE_TASKBAR_TAB'
 WINEX11_TEXT_SEGMENT = 0x7000
 WINEX11_TEXT_SEGMENT_SIZE = 0x4ab21
 WINEX11_RODATA = 0x52000
@@ -355,6 +370,68 @@ def overlay_map_sites():
 	]
 
 
+def overlay_unmanaged_sites():
+	cave, emit = assembler(WINEX11_UNMANAGED_CAVE)
+	emit(bytes.fromhex('575652'))
+	emit(bytes.fromhex('48c7c6ecffffff' 'ba0a000000'))
+	emit(bytes.fromhex('ff15'), WINEX11_CALL_HWND_PARAM_GOT)
+	emit(bytes.fromhex('5a5e5f'))
+	emit(bytes.fromhex('25') + struct.pack('<I', WS_EX_TOPMOST_NOACTIVATE))
+	emit(bytes.fromhex('3d') + struct.pack('<I', WS_EX_TOPMOST_NOACTIVATE))
+	emit(bytes.fromhex('7503' '31c0c3'))
+	emit(WINEX11_IS_WINDOW_MANAGED_PROLOGUE)
+	emit(bytes.fromhex('e9'), WINEX11_IS_WINDOW_MANAGED_BODY)
+
+	done, one = WINEX11_TAB_CAVE, WINEX11_TAB_CAVE + 2
+	name = one + 8
+	delete = name + len(TASKBAR_TAB_PROPERTY) + 1
+	flush = delete + 6
+	tab, emit = assembler(WINEX11_TAB_CAVE)
+	emit(bytes.fromhex('5bc3'))
+	emit(struct.pack('<Q', 1))
+	emit(TASKBAR_TAB_PROPERTY + b'\0')
+	emit(bytes.fromhex('ff15'), WINEX11_X_DELETE_PROPERTY_GOT)
+	# Without this flush the mark sat unsent for seconds, because nothing else flushes an idle window's display.
+	emit(bytes.fromhex('488b3b'))
+	emit(bytes.fromhex('ff15'), WINEX11_X_FLUSH_GOT)
+	emit(bytes.fromhex('e9'), done)
+	entry = WINEX11_TAB_CAVE + len(tab)
+	emit(bytes.fromhex('53' '4889fb'))
+	emit(bytes.fromhex('e8'), WINEX11_UPDATE_NET_WM_STATES)
+	emit(bytes.fromhex('f683a800000001'))
+	emit(bytes.fromhex('0f85'), done)
+	emit(bytes.fromhex('48837b5800'))
+	emit(bytes.fromhex('0f84'), done)
+	# The window's own display, so the mark stays in order with its other requests.
+	emit(bytes.fromhex('488b3b'))
+	emit(bytes.fromhex('488d35'), name)
+	emit(bytes.fromhex('31d2'))
+	emit(bytes.fromhex('ff15'), WINEX11_X_INTERN_ATOM_GOT)
+	emit(bytes.fromhex('4889c2'))
+	emit(bytes.fromhex('488b3b'))
+	emit(bytes.fromhex('488b7358'))
+	emit(bytes.fromhex('f683a800000040'))
+	emit(bytes.fromhex('0f84'), delete)
+	emit(bytes.fromhex('b9') + struct.pack('<I', XA_CARDINAL) + bytes.fromhex('41b820000000' '4531c9'))
+	emit(bytes.fromhex('6a01'))
+	emit(bytes.fromhex('488d05'), one)
+	emit(bytes.fromhex('50'))
+	emit(bytes.fromhex('ff15'), WINEX11_X_CHANGE_PROPERTY_GOT)
+	emit(bytes.fromhex('4883c410'))
+	emit(bytes.fromhex('e9'), flush)
+
+	is_managed = bytes.fromhex('e9') + rel32(WINEX11_UNMANAGED_CAVE, WINEX11_IS_WINDOW_MANAGED + 5)
+	sites = [
+		(WINEX11_IS_WINDOW_MANAGED, WINEX11_IS_WINDOW_MANAGED_PROLOGUE, is_managed + b'\x90' * 3),
+		(WINEX11_UNMANAGED_CAVE, bytes(len(cave)), bytes(cave)),
+		(WINEX11_TAB_CAVE, bytes(len(tab)), bytes(tab)),
+	]
+	for call in (WINEX11_ADD_TAB_UPDATE_STATES, WINEX11_DELETE_TAB_UPDATE_STATES):
+		original = bytes.fromhex('e8') + rel32(WINEX11_UPDATE_NET_WM_STATES, call + 5)
+		sites.append((call, original, bytes.fromhex('e8') + rel32(entry, call + 5)))
+	return sites
+
+
 def thread_input_detach_sites():
 	cave, emit = assembler(WINESERVER_CAVE)
 	emit(bytes.fromhex('4d85ff743f'))
@@ -517,18 +594,23 @@ PATCHES = {
 			*overlay_map_sites(),
 			grow_text_segment(WINEX11_TEXT_SEGMENT, WINEX11_TEXT_SEGMENT_SIZE, WINEX11_RODATA),
 		],
+		'above_fullscreen': overlay_unmanaged_sites(),
 	},
 }
 
 
-def patch_file(path, patch):
+def patch_sites(patch, above_fullscreen=True):
+	return patch['sites'] + (patch.get('above_fullscreen', []) if above_fullscreen else [])
+
+
+def patch_file(path, patch, above_fullscreen):
 	data = bytearray(open(path, 'rb').read())
 
 	digest = hashlib.sha256(data).hexdigest()
 	if digest != patch['sha256']:
 		sys.exit(f'unexpected {path} ({digest}), offsets would be wrong')
 
-	for start, original, replacement in patch['sites']:
+	for start, original, replacement in patch_sites(patch, above_fullscreen):
 		if data[start:start + len(original)] != original:
 			sys.exit(f'{path}: patch site {start:#x} does not match')
 		data[start:start + len(replacement)] = replacement
@@ -537,10 +619,11 @@ def patch_file(path, patch):
 
 
 def main():
-	runtime = sys.argv[1]
+	runtime, *flags = sys.argv[1:]
+	above_fullscreen = '--no-above-fullscreen' not in flags
 	for relative_path, patch in PATCHES.items():
-		patch_file(f'{runtime}/{relative_path}', patch)
-	print(f'patched {len(PATCHES)} files in {runtime}')
+		patch_file(f'{runtime}/{relative_path}', patch, above_fullscreen)
+	print(f'patched {len(PATCHES)} files in {runtime}{"" if above_fullscreen else ", leaving Tappo to the window manager"}')
 
 
 if __name__ == '__main__':

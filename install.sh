@@ -9,6 +9,7 @@ tappo_installer=
 autostart=ask
 desktop_shortcut=ask
 menu_entry=keep
+above_fullscreen=keep
 keep_installers=false
 assume_yes=false
 uninstall=false
@@ -40,6 +41,8 @@ Options:
   --no-desktop-shortcut  don't, and remove it if it's there
   --no-menu-entry        keep Tappo out of the app menu (logging in still works)
   --menu-entry           put it back in
+  --no-above-fullscreen  let fullscreen games cover the pet, and Show Taskbar Icon list Tappo itself rather than a copy
+  --above-fullscreen     keep the pet on top of fullscreen games again (the default)
   --keep-installers      keep the downloaded installers in build/ instead of deleting them
   -y, --yes              don't ask anything, take the defaults
   --uninstall            remove everything this installed, and offer to delete the prefix
@@ -75,7 +78,7 @@ ask() {
 }
 
 run_make() {
-	make --no-print-directory WINEPREFIX="$prefix" DESKTOP_DIR="$desktop" MENU_ENTRY="$menu_entry" "$@"
+	make --no-print-directory WINEPREFIX="$prefix" DESKTOP_DIR="$desktop" MENU_ENTRY="$menu_entry" ABOVE_FULLSCREEN="$above_fullscreen" "$@"
 }
 
 tappo_running() {
@@ -483,6 +486,8 @@ while [ $# -gt 0 ]; do
 		--no-desktop-shortcut) desktop_shortcut=no ;;
 		--menu-entry) menu_entry=yes ;;
 		--no-menu-entry) menu_entry=no ;;
+		--above-fullscreen) above_fullscreen=yes ;;
+		--no-above-fullscreen) above_fullscreen=no ;;
 		--keep-installers) keep_installers=true ;;
 		-y | --yes) assume_yes=true ;;
 		--uninstall) uninstall=true ;;
@@ -503,6 +508,9 @@ for installer in "$webview2_installer" "$tappo_installer"; do
 done
 if [ "$menu_entry" = keep ]; then
 	grep -qsx 'NoDisplay=true' "$HOME/.local/share/applications/wuwa-tappo.desktop" && menu_entry=no || menu_entry=yes
+fi
+if [ "$above_fullscreen" = keep ]; then
+	grep -qsx no "$project/build/above-fullscreen" && above_fullscreen=no || above_fullscreen=yes
 fi
 cd "$project"
 

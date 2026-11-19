@@ -23,6 +23,7 @@ from pathlib import Path
 PROJECT = Path(__file__).resolve().parent
 RUNTIME = PROJECT / 'build' / 'wine-runtime'
 HELPER = PROJECT / 'build' / 'tappo-input.exe.so'
+ABOVE_FULLSCREEN_FILE = PROJECT / 'build' / 'above-fullscreen'
 BRIDGE = PROJECT / 'bridge' / 'tappo-bridge.py'
 HOME = Path.home()
 REPOSITORY = 'Alphaproject1998/wuwa-tappo-linux'
@@ -110,7 +111,7 @@ LOG_SIGNATURES = (
 	('bridge', r'not keeping the pet on its screen', 'The bridge couldn\'t keep the pet on its screen'),
 	('bridge', r'leaving the pet on .*, as ', 'The bridge gave up putting the pet back on its screen'),
 	('bridge', r'not putting a copy of the pet', 'The bridge couldn\'t make the taskbar copy of the pet'),
-	('bridge', r'not pinning the taskbar copy|KWin would not (?:load|start)', 'KWin wouldn\'t run the script that puts the taskbar copy on every desktop'),
+	('bridge', r'not pinning the taskbar copy|not loading pin-copy|KWin would not (?:load|start)', 'KWin wouldn\'t run the script that tells the bridge when a fullscreen window covers the taskbar copy'),
 	('wine', r'X connection to .* broken', 'Wine lost its connection to Xwayland'),
 	('wine', r'X Error of failed request', 'An X error killed a Wine process'),
 	('wine', r'wine: Unhandled|Unhandled page fault', 'A Wine process crashed'),
@@ -345,13 +346,21 @@ def pe_layout(path):
 	return 'not laid out yet (the launcher does that on the next start)'
 
 
-def runtime_patches():
+def runtime_patcher():
 	# Read from the patcher, so a file it starts patching later, or a new patch in one it already does, is checked here too.
 	sys.dont_write_bytecode = True
 	spec = importlib.util.spec_from_file_location('patch_runtime', PROJECT / 'runtime' / 'patch-runtime.py')
 	module = importlib.util.module_from_spec(spec)
 	spec.loader.exec_module(module)
-	return module.PATCHES
+	return module
+
+
+def above_fullscreen():
+	# The Makefile's own default when the file isn't there.
+	try:
+		return ABOVE_FULLSCREEN_FILE.read_text().strip() != 'no'
+	except OSError:
+		return True
 
 
 def missing_sites(path, sites):
@@ -514,6 +523,8 @@ def taskbar_copy(report, stage, copy):
 	role = bridge_constant('COPY_ROLE')
 	if not role:
 		return []
+	if not above_fullscreen():
+		return ['Taskbar copy: not used, the window manager lists the pet itself']
 	mirroring = bool(report.bridge) and float(bridge_argument(report, '--mirror-poll') or 1) > 0
 	hidden = '_TAPPO_BRIDGE_HIDDEN' in stage.properties
 	lines = [
@@ -528,7 +539,7 @@ def taskbar_copy(report, stage, copy):
 	if copy and copy.rect != stage.rect:
 		report.flag('The taskbar copy isn\'t sitting on the pet, so something else moved it and the bridge couldn\'t put it back')
 	if copy and report.bridge and report.pin_script is False and '--no-pin-script' not in report.bridge.argv:
-		report.flag('The KWin script that puts the taskbar copy on every desktop isn\'t loaded')
+		report.flag('The KWin script that tells the bridge when a fullscreen window covers the taskbar copy isn\'t loaded')
 	return lines
 
 
@@ -735,20 +746,35 @@ def runtime(report):
 		lines.append('Patched: no, patching never finished')
 		summary['Runtime'] = f'{version}, unpatched'
 
+	above = above_fullscreen()
+	lines.append(f'Above fullscreen games: {"yes" if above else "no, built with --no-above-fullscreen"}')
+	if not above:
+		summary['Runtime'] += ', not above fullscreen games'
+
 	lines.append('')
-	total = absent = 0
-	for relative_path, patch in runtime_patches().items():
-		sites = patch['sites']
+	patcher = runtime_patcher()
+	total = absent = extra = 0
+	for relative_path, patch in patcher.PATCHES.items():
+		sites = patcher.patch_sites(patch, above)
 		missing = missing_sites(RUNTIME / relative_path, sites)
+		# Sites left out on purpose have to be absent too.
+		left_out = [] if above else patch.get('above_fullscreen', [])
+		unwanted = [start for start, _, _ in left_out if start not in missing_sites(RUNTIME / relative_path, left_out)]
 		total += len(sites)
 		absent += len(missing)
+		extra += len(unwanted)
 		line = f'{relative_path}: {sha256(RUNTIME / relative_path)}, {len(sites) - len(missing)} of {len(sites)} patch sites in place'
 		if missing:
 			line += f', missing {", ".join(hex(start) for start in missing)}'
+		if unwanted:
+			line += f', above-fullscreen sites in place though it was turned off: {", ".join(hex(start) for start in unwanted)}'
 		lines.append(line)
 	if absent:
 		summary['Runtime'] += f', {absent} of {total} patch sites missing'
 		report.flag(f'The patched Wine doesn\'t match this checkout, {absent} of its {total} patch sites aren\'t in place (./install.sh rebuilds it)')
+	if extra:
+		summary['Runtime'] += ', above-fullscreen patch in place though turned off'
+		report.flag('The patched Wine still keeps the pet above fullscreen games though --no-above-fullscreen turned that off (./install.sh rebuilds it)')
 
 	lines.append(f'build/ole32.dll: {sha256(PROJECT / "build" / "ole32.dll")}')
 	lines.append(f'Input helper: {"built" if HELPER.exists() else "not built"}')
@@ -1074,6 +1100,10 @@ def x_windows(report):
 		kind = 'override-redirect' if stage.override_redirect else 'managed by the window manager'
 		report.summary['Pet'] = f'on {screen}, {kind}'
 		lines.append(f'Pet: on {screen}, {kind}')
+		# Wine decides at window creation, so a mismatch means Tappo started on the other build.
+		if role and stage.override_redirect != above_fullscreen():
+			wanted = 'keep it above fullscreen games' if above_fullscreen() else 'leave it to the window manager'
+			report.flag(f'The pet is {kind} though the runtime is built to {wanted}, so Tappo started before the last rebuild (restarting Tappo fixes it)')
 
 		if click_layer:
 			click_screen = screen_of(click_layer.rect, monitors)

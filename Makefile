@@ -18,8 +18,9 @@ ICONS := $(HOME)/.local/share/icons/hicolor
 WINE_ICON ?= $(firstword $(wildcard $(ICONS)/256x256/apps/*_WuwaTappo.0.png))
 DESKTOP_DIR ?= $(shell xdg-user-dir DESKTOP 2> /dev/null || echo "$(HOME)/Desktop")
 MENU_ENTRY ?= yes
+ABOVE_FULLSCREEN ?= $(or $(shell cat build/above-fullscreen 2> /dev/null),yes)
 
-.PHONY: all runtime prefix webview2 app ole32 service corners-exclusion blur-exclusion wine-leftovers launcher autostart desktop-shortcut logout-script install uninstall clean
+.PHONY: FORCE all runtime prefix webview2 app ole32 service corners-exclusion blur-exclusion wine-leftovers launcher autostart desktop-shortcut logout-script install uninstall clean
 
 all: build/tappo-input.exe.so
 
@@ -29,15 +30,20 @@ build/$(WINE_PACKAGE):
 	echo "$(WINE_PACKAGE_SHA256)  $@.part" | sha256sum -c --quiet || { rm -f "$@.part"; exit 1; }
 	mv "$@.part" "$@"
 
-$(RUNTIME_STAMP): build/$(WINE_PACKAGE) runtime/patch-runtime.py
+$(RUNTIME_STAMP): build/$(WINE_PACKAGE) runtime/patch-runtime.py build/above-fullscreen
 	rm -rf $(RUNTIME) build/wine-extract
 	mkdir -p build/wine-extract
 	tar --zstd -xf build/$(WINE_PACKAGE) -C build/wine-extract usr
 	mv build/wine-extract/usr $(RUNTIME)
 	rmdir build/wine-extract
-	python3 -I runtime/patch-runtime.py $(RUNTIME)
+	python3 -I runtime/patch-runtime.py $(RUNTIME) $(if $(filter no,$(ABOVE_FULLSCREEN)),--no-above-fullscreen)
 	ln -s wineserver $(RUNTIME)/bin/tappo-wineserver
 	touch $@
+
+build/above-fullscreen: FORCE
+	@case "$(ABOVE_FULLSCREEN)" in yes | no) ;; *) echo "ABOVE_FULLSCREEN has to be yes or no" >&2; exit 1 ;; esac
+	@mkdir -p build
+	@[ "$$(cat $@ 2> /dev/null)" = "$(ABOVE_FULLSCREEN)" ] || echo "$(ABOVE_FULLSCREEN)" > $@
 
 runtime: $(RUNTIME_STAMP)
 

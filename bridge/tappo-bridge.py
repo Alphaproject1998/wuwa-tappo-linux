@@ -19,6 +19,10 @@ PR_SET_NAME = 15
 BUILD_DIR = Path(__file__).resolve().parent.parent / 'build'
 DEFAULT_HELPER = BUILD_DIR / 'tappo-input.exe.so'
 DEFAULT_WINE = BUILD_DIR / 'wine-runtime' / 'bin' / 'wine'
+ABOVE_FULLSCREEN_FILE = BUILD_DIR / 'above-fullscreen'
+PIN_SCRIPT = Path(__file__).resolve().parent / 'pin-copy.js'
+PIN_SCRIPT_NAME = 'tappo-bridge-copy'
+COPY_ROLE = b'tappo-bridge-copy'
 
 LEFT_HAND_KEYS = {
 	ecodes.KEY_ESC, ecodes.KEY_F1, ecodes.KEY_F2, ecodes.KEY_F3, ecodes.KEY_F4, ecodes.KEY_F5, ecodes.KEY_F6,
@@ -101,7 +105,40 @@ SUBSTRUCTURE_MASKS = (1 << 19) | (1 << 20)
 X_SUCCESS = 0
 ATOM_NAMES = ('WM_STATE', '_NET_WM_STATE', '_NET_WM_STATE_FULLSCREEN', '_NET_WM_PID')
 
+CW_BACK_PIXEL = 1 << 1
+CW_BORDER_PIXEL = 1 << 3
+CW_EVENT_MASK = 1 << 11
+CW_COLORMAP = 1 << 13
+EXPOSURE_MASK = 1 << 15
+STRUCTURE_NOTIFY_MASK = 1 << 17
+PROPERTY_CHANGE_MASK = 1 << 22
+EXPOSE = 12
+DESTROY_NOTIFY = 17
+UNMAP_NOTIFY = 18
+MAP_NOTIFY = 19
+CONFIGURE_NOTIFY = 22
+PROPERTY_NOTIFY = 28
+PROPERTY_DELETE = 1
+INCLUDE_INFERIORS = 1
+DAMAGE_REPORT_NON_EMPTY = 3
+SIZE_HINTS_FLAGS = 0x3f
+MWM_HINTS = (3, 4, 0, 0, 0)
+# North-west gravity, all four values given, asked for by a pager.
+PAGER_MOVE_RESIZE = 1 | 0xf << 8 | 2 << 12
+ALL_DESKTOPS = 0xffffffff
+MIRROR_ATOM_NAMES = (
+	'_WINE_TASKBAR_TAB', '_TAPPO_BRIDGE_HIDDEN', '_NET_WM_WINDOW_OPACITY', '_NET_CLIENT_LIST_STACKING',
+	'_KDE_NET_WM_SKIP_CLOSE_ANIMATION', '_NET_SHOWING_DESKTOP',
+	'_NET_CURRENT_DESKTOP', '_NET_WM_DESKTOP', '_NET_WM_STATE', '_NET_WM_STATE_FULLSCREEN', '_NET_WM_STATE_ABOVE',
+	'_NET_WM_STATE_BELOW', '_NET_WM_STATE_MAXIMIZED_VERT', '_NET_WM_STATE_MAXIMIZED_HORZ', '_NET_WM_NAME', '_NET_WM_ICON', 'WM_NAME',
+	'UTF8_STRING', 'WM_HINTS', 'WM_NORMAL_HINTS', 'WM_SIZE_HINTS', '_MOTIF_WM_HINTS', '_NET_WM_WINDOW_TYPE',
+	'_NET_WM_WINDOW_TYPE_NORMAL', 'WM_PROTOCOLS', 'WM_DELETE_WINDOW', 'WM_WINDOW_ROLE', 'ATOM', 'CARDINAL', 'STRING',
+	'_NET_MOVERESIZE_WINDOW',
+)
+
 X_ERROR_HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+# Xlib keeps one error handler per process, so it has to outlive every connection.
+IGNORE_X_ERRORS = X_ERROR_HANDLER(lambda display, error: 0)
 
 
 class XRectangle(ctypes.Structure):
@@ -145,8 +182,85 @@ class XRRMonitorInfo(ctypes.Structure):
 	]
 
 
+class XSetWindowAttributes(ctypes.Structure):
+	_fields_ = [
+		('background_pixmap', ctypes.c_ulong), ('background_pixel', ctypes.c_ulong),
+		('border_pixmap', ctypes.c_ulong), ('border_pixel', ctypes.c_ulong),
+		('bit_gravity', ctypes.c_int), ('win_gravity', ctypes.c_int), ('backing_store', ctypes.c_int),
+		('backing_planes', ctypes.c_ulong), ('backing_pixel', ctypes.c_ulong), ('save_under', ctypes.c_int),
+		('event_mask', ctypes.c_long), ('do_not_propagate_mask', ctypes.c_long), ('override_redirect', ctypes.c_int),
+		('colormap', ctypes.c_ulong), ('cursor', ctypes.c_ulong),
+	]
+
+
+class XAnyEvent(ctypes.Structure):
+	_fields_ = [
+		('type', ctypes.c_int), ('serial', ctypes.c_ulong), ('send_event', ctypes.c_int),
+		('display', ctypes.c_void_p), ('window', ctypes.c_ulong),
+	]
+
+
+class XConfigureEvent(ctypes.Structure):
+	_fields_ = [
+		('type', ctypes.c_int), ('serial', ctypes.c_ulong), ('send_event', ctypes.c_int), ('display', ctypes.c_void_p),
+		('event', ctypes.c_ulong), ('window', ctypes.c_ulong), ('x', ctypes.c_int), ('y', ctypes.c_int),
+		('width', ctypes.c_int), ('height', ctypes.c_int), ('border_width', ctypes.c_int),
+		('above', ctypes.c_ulong), ('override_redirect', ctypes.c_int),
+	]
+
+
+class XExposeEvent(ctypes.Structure):
+	_fields_ = [
+		('type', ctypes.c_int), ('serial', ctypes.c_ulong), ('send_event', ctypes.c_int), ('display', ctypes.c_void_p),
+		('window', ctypes.c_ulong), ('x', ctypes.c_int), ('y', ctypes.c_int),
+		('width', ctypes.c_int), ('height', ctypes.c_int), ('count', ctypes.c_int),
+	]
+
+
+class XPropertyEvent(ctypes.Structure):
+	_fields_ = [
+		('type', ctypes.c_int), ('serial', ctypes.c_ulong), ('send_event', ctypes.c_int), ('display', ctypes.c_void_p),
+		('window', ctypes.c_ulong), ('atom', ctypes.c_ulong), ('time', ctypes.c_ulong), ('state', ctypes.c_int),
+	]
+
+
+class XEvent(ctypes.Union):
+	_fields_ = [
+		('type', ctypes.c_int), ('any', XAnyEvent), ('configure', XConfigureEvent), ('expose', XExposeEvent),
+		('property', XPropertyEvent), ('client', XClientMessageEvent), ('pad', ctypes.c_long * 24),
+	]
+
+
 def log(message):
 	print(message, file=sys.stderr, flush=True)
+
+
+async def kwin_scripting(method, signature='', *arguments):
+	return await bus_call('org.kde.KWin', '/Scripting', 'org.kde.kwin.Scripting', method, signature, *arguments)
+
+
+async def bus_call(service, path, interface, method, signature='', *arguments):
+	command = ['busctl', '--user', '--json=short', 'call', service, path, interface, method]
+	if signature:
+		command += ['--', signature, *arguments]
+	try:
+		process = await asyncio.create_subprocess_exec(
+			*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+		)
+	except OSError as error:
+		return None, str(error)
+	output, error = await process.communicate()
+	if process.returncode:
+		return None, error.decode(errors='replace').strip()
+	data = json.loads(output).get('data') if output.strip() else None
+	return (data[0] if data else None), None
+
+
+def runtime_above_fullscreen():
+	try:
+		return ABOVE_FULLSCREEN_FILE.read_text().strip() != 'no'
+	except OSError:
+		return True
 
 
 def find_app(process_name, prefix):
@@ -583,8 +697,9 @@ class XDisplay:
 		self.flush = bind(x11, 'XFlush', ctypes.c_int, pointer)
 
 		# Otherwise a window closing mid-scan would end the bridge, since Xlib's default handler exits on any error.
-		self.ignore_errors = X_ERROR_HANDLER(lambda display, error: 0)
-		bind(x11, 'XSetErrorHandler', pointer, X_ERROR_HANDLER)(self.ignore_errors)
+		# self.ignore_errors = X_ERROR_HANDLER(lambda display, error: 0)
+		# bind(x11, 'XSetErrorHandler', pointer, X_ERROR_HANDLER)(self.ignore_errors)
+		bind(x11, 'XSetErrorHandler', pointer, X_ERROR_HANDLER)(IGNORE_X_ERRORS)
 
 		self.display = bind(x11, 'XOpenDisplay', pointer, ctypes.c_char_p)(None)
 		if not self.display:
@@ -758,6 +873,9 @@ class XDisplay:
 		for window in windows:
 			if self.window_class(window) != owner_class or self.text(window, '_NET_WM_NAME') != STAGE_TITLE:
 				continue
+			# The taskbar copy has the stage's class and title.
+			if self.text(window, 'WM_WINDOW_ROLE') == COPY_ROLE.decode():
+				continue
 			if self.window_attributes(self.display, window, ctypes.byref(attributes)) and attributes.map_state == IS_VIEWABLE:
 				return window
 		return None
@@ -846,6 +964,449 @@ class XDisplay:
 		return screens
 
 
+class Mirror:
+	# Window managers only list what they manage, so while Wine marks the override-redirect pet with _WINE_TASKBAR_TAB, a managed copy stands in for it on the taskbar and in OBS.
+	def __init__(self, owner_class, settle):
+		x11 = ctypes.CDLL('libX11.so.6')
+		xext = ctypes.CDLL('libXext.so.6')
+		xdamage = ctypes.CDLL('libXdamage.so.1')
+		xfixes = ctypes.CDLL('libXfixes.so.3')
+		pointer = ctypes.c_void_p
+		window = ctypes.c_ulong
+
+		self.connection_number = bind(x11, 'XConnectionNumber', ctypes.c_int, pointer)
+		self.close_display = bind(x11, 'XCloseDisplay', ctypes.c_int, pointer)
+		self.intern_atom = bind(x11, 'XInternAtom', ctypes.c_ulong, pointer, ctypes.c_char_p, ctypes.c_int)
+		self.query_tree = bind(x11, 'XQueryTree', ctypes.c_int, pointer, window, *[pointer] * 4)
+		self.window_attributes = bind(x11, 'XGetWindowAttributes', ctypes.c_int, pointer, window, pointer)
+		self.class_hint = bind(x11, 'XGetClassHint', ctypes.c_int, pointer, window, pointer)
+		self.set_class_hint = bind(x11, 'XSetClassHint', ctypes.c_int, pointer, window, pointer)
+		self.free = bind(x11, 'XFree', ctypes.c_int, pointer)
+		self.get_property = bind(
+			x11, 'XGetWindowProperty', ctypes.c_int, pointer, window, ctypes.c_ulong, ctypes.c_long, ctypes.c_long,
+			ctypes.c_int, ctypes.c_ulong, *[pointer] * 5,
+		)
+		self.change_property = bind(
+			x11, 'XChangeProperty', ctypes.c_int, pointer, window, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_int,
+			ctypes.c_int, pointer, ctypes.c_int,
+		)
+		self.delete_property = bind(x11, 'XDeleteProperty', ctypes.c_int, pointer, window, ctypes.c_ulong)
+		self.create_colormap = bind(x11, 'XCreateColormap', ctypes.c_ulong, pointer, window, pointer, ctypes.c_int)
+		self.free_colormap = bind(x11, 'XFreeColormap', ctypes.c_int, pointer, ctypes.c_ulong)
+		self.create_window = bind(
+			x11, 'XCreateWindow', window, pointer, window, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint,
+			ctypes.c_uint, ctypes.c_int, ctypes.c_uint, pointer, ctypes.c_ulong, pointer,
+		)
+		self.destroy_window = bind(x11, 'XDestroyWindow', ctypes.c_int, pointer, window)
+		self.select_input = bind(x11, 'XSelectInput', ctypes.c_int, pointer, window, ctypes.c_long)
+		self.map_window = bind(x11, 'XMapWindow', ctypes.c_int, pointer, window)
+		self.unmap_window = bind(x11, 'XUnmapWindow', ctypes.c_int, pointer, window)
+		self.move_resize_window = bind(
+			x11, 'XMoveResizeWindow', ctypes.c_int, pointer, window, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint,
+		)
+		self.send_event = bind(x11, 'XSendEvent', ctypes.c_int, pointer, window, ctypes.c_int, ctypes.c_long, pointer)
+		self.create_gc = bind(x11, 'XCreateGC', pointer, pointer, window, ctypes.c_ulong, pointer)
+		self.free_gc = bind(x11, 'XFreeGC', ctypes.c_int, pointer, pointer)
+		self.set_subwindow_mode = bind(x11, 'XSetSubwindowMode', ctypes.c_int, pointer, pointer, ctypes.c_int)
+		self.set_graphics_exposures = bind(x11, 'XSetGraphicsExposures', ctypes.c_int, pointer, pointer, ctypes.c_int)
+		self.set_clip_mask = bind(x11, 'XSetClipMask', ctypes.c_int, pointer, pointer, ctypes.c_ulong)
+		self.copy_area = bind(
+			x11, 'XCopyArea', ctypes.c_int, pointer, window, window, pointer, ctypes.c_int, ctypes.c_int,
+			ctypes.c_uint, ctypes.c_uint, ctypes.c_int, ctypes.c_int,
+		)
+		self.pending = bind(x11, 'XPending', ctypes.c_int, pointer)
+		self.next_event = bind(x11, 'XNextEvent', ctypes.c_int, pointer, pointer)
+		self.flush = bind(x11, 'XFlush', ctypes.c_int, pointer)
+		self.shape_rectangles = bind(
+			xext, 'XShapeCombineRectangles', None, pointer, window, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+			pointer, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+		)
+		damage_query = bind(xdamage, 'XDamageQueryExtension', ctypes.c_int, pointer, pointer, pointer)
+		self.damage_create = bind(xdamage, 'XDamageCreate', ctypes.c_ulong, pointer, window, ctypes.c_int)
+		self.damage_destroy = bind(xdamage, 'XDamageDestroy', None, pointer, ctypes.c_ulong)
+		self.damage_subtract = bind(xdamage, 'XDamageSubtract', None, pointer, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
+		fixes_query = bind(xfixes, 'XFixesQueryExtension', ctypes.c_int, pointer, pointer, pointer)
+		create_region = bind(xfixes, 'XFixesCreateRegion', ctypes.c_ulong, pointer, pointer, ctypes.c_int)
+		self.set_gc_clip_region = bind(
+			xfixes, 'XFixesSetGCClipRegion', None, pointer, pointer, ctypes.c_int, ctypes.c_int, ctypes.c_ulong,
+		)
+
+		# self.ignore_errors = X_ERROR_HANDLER(lambda display, error: 0)
+		# bind(x11, 'XSetErrorHandler', pointer, X_ERROR_HANDLER)(self.ignore_errors)
+		bind(x11, 'XSetErrorHandler', pointer, X_ERROR_HANDLER)(IGNORE_X_ERRORS)
+
+		self.display = bind(x11, 'XOpenDisplay', pointer, ctypes.c_char_p)(None)
+		if not self.display:
+			raise OSError(f'cannot open X display {os.environ.get("DISPLAY", "(DISPLAY not set)")}')
+		self.root = bind(x11, 'XDefaultRootWindow', window, pointer)(self.display)
+		self.atoms = {name: self.intern_atom(self.display, name.encode(), False) for name in MIRROR_ATOM_NAMES}
+		event_base, error_base = ctypes.c_int(), ctypes.c_int()
+		if not fixes_query(self.display, ctypes.byref(event_base), ctypes.byref(error_base)):
+			raise OSError('the X server has no XFIXES extension')
+		if not damage_query(self.display, ctypes.byref(event_base), ctypes.byref(error_base)):
+			raise OSError('the X server has no DAMAGE extension')
+		self.damage_notify = event_base.value
+		self.region = create_region(self.display, None, 0)
+		self.select_input(self.display, self.root, PROPERTY_CHANGE_MASK)
+		self.flush(self.display)
+
+		self.owner_class = owner_class
+		self.settle = settle
+		self.stage = None
+		self.copy = None
+		self.settling = None
+		self.scripted = False
+		self.watched = set()
+		self.event = XEvent()
+
+	def fileno(self):
+		return self.connection_number(self.display)
+
+	def close(self):
+		self.drop()
+		self.close_display(self.display)
+
+	def property_values(self, window, name, length=64):
+		actual_type, actual_format = ctypes.c_ulong(), ctypes.c_int()
+		count, remaining = ctypes.c_ulong(), ctypes.c_ulong()
+		data = ctypes.c_void_p()
+		status = self.get_property(
+			self.display, window, self.atoms[name], 0, length, False, ANY_PROPERTY_TYPE, ctypes.byref(actual_type),
+			ctypes.byref(actual_format), ctypes.byref(count), ctypes.byref(remaining), ctypes.byref(data),
+		)
+		if status != X_SUCCESS or not actual_type.value:
+			return None
+		values = []
+		if actual_format.value == 32:
+			values = list(ctypes.cast(data, ctypes.POINTER(ctypes.c_ulong))[:count.value])
+		elif actual_format.value == 8:
+			values = ctypes.string_at(data, count.value)
+		if data:
+			self.free(data)
+		return values
+
+	def set_values(self, window, name, kind, values):
+		data = (ctypes.c_long * len(values))(*values)
+		self.change_property(self.display, window, self.atoms[name], self.atoms[kind], 32, 0, data, len(values))
+
+	def attributes(self, window):
+		attributes = XWindowAttributes()
+		if not self.window_attributes(self.display, window, ctypes.byref(attributes)):
+			return None
+		return attributes
+
+	def window_class(self, window):
+		hint = XClassHint()
+		if not self.class_hint(self.display, window, ctypes.byref(hint)):
+			return None
+		window_class = ctypes.string_at(hint.res_class).decode(errors='replace') if hint.res_class else None
+		for value in (hint.res_name, hint.res_class):
+			if value:
+				self.free(value)
+		return window_class
+
+	def top_levels(self):
+		root, parent = ctypes.c_ulong(), ctypes.c_ulong()
+		children = ctypes.POINTER(ctypes.c_ulong)()
+		count = ctypes.c_uint()
+		if not self.query_tree(
+			self.display, self.root, ctypes.byref(root), ctypes.byref(parent), ctypes.byref(children), ctypes.byref(count),
+		):
+			return []
+		windows = children[:count.value]
+		if children:
+			self.free(children)
+		return windows
+
+	def scan(self):
+		if self.stage:
+			self.update_cover()
+			return
+		windows = self.top_levels()
+		self.watched &= set(windows)
+		for window in windows:
+			attributes = self.attributes(window)
+			if not attributes or not attributes.override_redirect or attributes.window_class != INPUT_OUTPUT:
+				continue
+			if self.window_class(window) != self.owner_class:
+				continue
+			if window not in self.watched:
+				self.select_input(self.display, window, PROPERTY_CHANGE_MASK)
+				self.watched.add(window)
+			wanted = self.property_values(window, '_WINE_TASKBAR_TAB') is not None
+			if wanted and attributes.map_state == IS_VIEWABLE:
+				self.start(window, attributes)
+				return
+			# A bridge that died while the pet was hidden leaves it invisible.
+			if not wanted and self.property_values(window, '_TAPPO_BRIDGE_HIDDEN') is not None:
+				self.reveal(window)
+
+	def start(self, stage, attributes):
+		# Selected before the geometry is read again, because Tappo moves the pet right after asking for the tab.
+		self.select_input(self.display, stage, STRUCTURE_NOTIFY_MASK | PROPERTY_CHANGE_MASK)
+		attributes = self.attributes(stage) or attributes
+		self.stage = stage
+		# A bridge that died with the pet hidden left its own 0 there.
+		self.stage_opacity = None if self.property_values(stage, '_TAPPO_BRIDGE_HIDDEN') else self.property_values(stage, '_NET_WM_WINDOW_OPACITY')
+		self.geometry = (attributes.x, attributes.y, attributes.width, attributes.height)
+		self.placed = self.geometry
+		self.copy_mapped = False
+		self.copy_shown = False
+		self.copy_visible = False
+		self.covered = None
+		self.settling = None
+		self.showing_desktop = self.desktop_shown()
+		self.colormap = self.create_colormap(self.display, self.root, attributes.visual, 0)
+		settings = XSetWindowAttributes(
+			background_pixel=0, border_pixel=0, event_mask=EXPOSURE_MASK | STRUCTURE_NOTIFY_MASK | PROPERTY_CHANGE_MASK,
+			colormap=self.colormap,
+		)
+		self.copy = self.create_window(
+			self.display, self.root, *self.geometry, 0, attributes.depth, INPUT_OUTPUT, attributes.visual,
+			CW_BACK_PIXEL | CW_BORDER_PIXEL | CW_EVENT_MASK | CW_COLORMAP, ctypes.byref(settings),
+		)
+
+		title = self.property_values(stage, '_NET_WM_NAME') or self.property_values(stage, 'WM_NAME') or self.owner_class.encode()
+		for name in ('_NET_WM_NAME', 'WM_NAME'):
+			self.change_property(self.display, self.copy, self.atoms[name], self.atoms['UTF8_STRING'], 8, 0, title, len(title))
+		owner_class = ctypes.c_char_p(self.owner_class.encode())
+		class_hint = XClassHint(ctypes.cast(owner_class, ctypes.c_void_p), ctypes.cast(owner_class, ctypes.c_void_p))
+		self.set_class_hint(self.display, self.copy, ctypes.byref(class_hint))
+		icon = self.property_values(stage, '_NET_WM_ICON', 1 << 20)
+		if icon:
+			self.set_values(self.copy, '_NET_WM_ICON', 'CARDINAL', icon)
+		# Never focused, so KWin doesn't flag it as wanting attention either.
+		self.set_values(self.copy, 'WM_HINTS', 'WM_HINTS', [1, 0, 0, 0, 0, 0, 0, 0, 0])
+		self.set_size_hints()
+		# Move only, as closing it would just leave the pet with no entry.
+		self.set_values(self.copy, '_MOTIF_WM_HINTS', '_MOTIF_WM_HINTS', MWM_HINTS)
+		# KWin kills the client of a window without it, here the whole bridge.
+		self.set_values(self.copy, 'WM_PROTOCOLS', 'ATOM', [self.atoms['WM_DELETE_WINDOW']])
+		self.set_values(self.copy, '_NET_WM_WINDOW_TYPE', 'ATOM', [self.atoms['_NET_WM_WINDOW_TYPE_NORMAL']])
+		self.set_values(self.copy, '_NET_WM_STATE', 'ATOM', [self.atoms['_NET_WM_STATE_ABOVE']])
+		# Not on all desktops, because Windows keeps a window with a taskbar entry on one.
+		# self.set_values(self.copy, '_NET_WM_DESKTOP', 'CARDINAL', [ALL_DESKTOPS])
+		self.change_property(
+			self.display, self.copy, self.atoms['WM_WINDOW_ROLE'], self.atoms['STRING'], 8, 0, COPY_ROLE, len(COPY_ROLE),
+		)
+		self.set_values(self.copy, '_KDE_NET_WM_SKIP_CLOSE_ANIMATION', 'CARDINAL', [1])
+		self.set_values(self.copy, '_NET_WM_WINDOW_OPACITY', 'CARDINAL', [0])
+		self.shape_rectangles(self.display, self.copy, SHAPE_INPUT, 0, 0, None, 0, 0, 0)
+
+		self.gc = self.create_gc(self.display, self.copy, 0, None)
+		self.set_subwindow_mode(self.display, self.gc, INCLUDE_INFERIORS)
+		self.set_graphics_exposures(self.display, self.gc, False)
+		self.damage = self.damage_create(self.display, stage, DAMAGE_REPORT_NON_EMPTY)
+		self.map_window(self.display, self.copy)
+		self.flush(self.display)
+		log(f'the pet wants a taskbar entry, copying {stage:#x} into {self.copy:#x}')
+
+	def drop(self):
+		if not self.stage:
+			return
+		self.stop_settling()
+		self.reveal(self.stage, self.stage_opacity)
+		self.select_input(self.display, self.stage, PROPERTY_CHANGE_MASK)
+		self.damage_destroy(self.display, self.damage)
+		self.destroy_window(self.display, self.copy)
+		self.free_gc(self.display, self.gc)
+		self.free_colormap(self.display, self.colormap)
+		self.flush(self.display)
+		log(f'dropped the taskbar copy of {self.stage:#x}')
+		self.stage = self.copy = None
+
+	def set_size_hints(self):
+		width, height = self.geometry[2:]
+		self.set_values(
+			self.copy, 'WM_NORMAL_HINTS', 'WM_SIZE_HINTS', [SIZE_HINTS_FLAGS, *self.geometry, width, height, width, height, *[0] * 9],
+		)
+
+	def reveal(self, window, opacity=None):
+		if opacity is None:
+			self.delete_property(self.display, window, self.atoms['_NET_WM_WINDOW_OPACITY'])
+		else:
+			self.set_values(window, '_NET_WM_WINDOW_OPACITY', 'CARDINAL', opacity)
+		self.delete_property(self.display, window, self.atoms['_TAPPO_BRIDGE_HIDDEN'])
+
+	def hide(self, window):
+		self.set_values(window, '_TAPPO_BRIDGE_HIDDEN', 'CARDINAL', [1])
+		self.set_values(window, '_NET_WM_WINDOW_OPACITY', 'CARDINAL', [0])
+
+	def update_cover(self):
+		# Checked apart because Show Desktop hides the copy without unmapping it, and leaves the override-redirect pet up.
+		visible = self.copy_shown and self.placed == self.geometry and not self.showing_desktop
+		covered = not visible or self.fullscreen_over_copy()
+		# Both change in one batch, or the pet would show twice over through its own transparency.
+		if visible != self.copy_visible:
+			self.copy_visible = visible
+			if visible:
+				self.delete_property(self.display, self.copy, self.atoms['_NET_WM_WINDOW_OPACITY'])
+			else:
+				self.set_values(self.copy, '_NET_WM_WINDOW_OPACITY', 'CARDINAL', [0])
+		if covered != self.covered:
+			self.covered = covered
+			if covered:
+				self.reveal(self.stage, self.stage_opacity)
+			else:
+				self.hide(self.stage)
+
+	def stage_opacity_changed(self):
+		opacity = self.property_values(self.stage, '_NET_WM_WINDOW_OPACITY')
+		if opacity == [0]:
+			return
+		# Wine rewrites it whenever Tappo sets the pet's layered attributes.
+		self.stage_opacity = opacity
+		if self.covered is False:
+			self.hide(self.stage)
+
+	def fullscreen_over_copy(self):
+		# pin-copy.js sees Wayland windows and desktops, which X can't, so while it runs its keep below is the answer.
+		below = self.atoms['_NET_WM_STATE_BELOW'] in (self.property_values(self.copy, '_NET_WM_STATE') or [])
+		if below or self.scripted:
+			return below
+		stacking = self.property_values(self.root, '_NET_CLIENT_LIST_STACKING', 4096) or []
+		if self.copy not in stacking:
+			return False
+		left, top, width, height = self.geometry
+		area = (left, top, left + width, top + height)
+		desktop = (self.property_values(self.root, '_NET_CURRENT_DESKTOP') or [None])[0]
+		for window in stacking[stacking.index(self.copy) + 1:]:
+			if self.atoms['_NET_WM_STATE_FULLSCREEN'] not in (self.property_values(window, '_NET_WM_STATE') or []):
+				continue
+			# For window managers that keep other desktops' windows mapped; KWin puts every Xwayland window on desktop 0.
+			if (self.property_values(window, '_NET_WM_DESKTOP') or [ALL_DESKTOPS])[0] not in (desktop, ALL_DESKTOPS):
+				continue
+			attributes = self.attributes(window)
+			if not attributes or attributes.map_state != IS_VIEWABLE:
+				continue
+			if overlap(area, (attributes.x, attributes.y, attributes.x + attributes.width, attributes.y + attributes.height)):
+				return True
+		return False
+
+	def copy_contents(self, damaged):
+		offset_x, offset_y = self.geometry[0] - self.placed[0], self.geometry[1] - self.placed[1]
+		if damaged:
+			self.damage_subtract(self.display, self.damage, 0, self.region)
+			self.set_gc_clip_region(self.display, self.gc, offset_x, offset_y, self.region)
+		else:
+			self.set_clip_mask(self.display, self.gc, 0)
+		self.copy_area(self.display, self.stage, self.copy, self.gc, 0, 0, *self.geometry[2:], offset_x, offset_y)
+
+	def request(self, name, *values):
+		message = XEvent()
+		message.client = XClientMessageEvent(
+			type=CLIENT_MESSAGE, window=self.copy, message_type=self.atoms[name], format=32,
+			data=(ctypes.c_long * 5)(*values, *[0] * (5 - len(values))),
+		)
+		self.send_event(self.display, self.root, False, SUBSTRUCTURE_MASKS, ctypes.byref(message))
+
+	def settle_placement(self):
+		# KWin maximizes a window bigger than the work area each time it takes it on, fixed size or not.
+		self.request('_NET_WM_STATE', 0, self.atoms['_NET_WM_STATE_MAXIMIZED_VERT'], self.atoms['_NET_WM_STATE_MAXIMIZED_HORZ'], 1)
+		self.place_copy()
+
+	def place_copy(self):
+		if not self.copy_mapped:
+			self.move_resize_window(self.display, self.copy, *self.geometry)
+			return
+		# KWin keeps a window that sits inside the work area there unless a pager asks, which once held the copy below a top panel.
+		self.request('_NET_MOVERESIZE_WINDOW', PAGER_MOVE_RESIZE, *self.geometry)
+
+	def settled(self):
+		self.settling = None
+		self.copy_shown = True
+		self.update_cover()
+		# Round trips can pull events into Xlib's queue, where the fd reader never sees them.
+		# self.flush(self.display)
+		self.process()
+
+	def stop_settling(self):
+		if self.settling:
+			self.settling.cancel()
+			self.settling = None
+
+	def desktop_shown(self):
+		return bool((self.property_values(self.root, '_NET_SHOWING_DESKTOP') or [0])[0])
+
+	def showing_desktop_changed(self):
+		showing = self.desktop_shown()
+		if showing == self.showing_desktop:
+			return
+		self.showing_desktop = showing
+		self.stop_settling()
+		if showing:
+			self.copy_shown = False
+			self.update_cover()
+		elif self.copy_mapped:
+			# The copy animates back in with every other window, so the real pet stays until it has.
+			self.settling = asyncio.get_running_loop().call_later(self.settle, self.settled)
+
+	def process(self):
+		while self.pending(self.display):
+			self.next_event(self.display, ctypes.byref(self.event))
+			self.handle(self.event)
+		self.flush(self.display)
+
+	def handle(self, event):
+		window = event.any.window
+		if event.type == PROPERTY_NOTIFY and event.property.atom == self.atoms['_WINE_TASKBAR_TAB']:
+			if not self.stage and event.property.state != PROPERTY_DELETE:
+				self.scan()
+			elif window == self.stage and event.property.state == PROPERTY_DELETE:
+				self.drop()
+		elif not self.stage:
+			return
+		elif event.type == self.damage_notify:
+			if window == self.stage:
+				self.copy_contents(True)
+		elif event.type == PROPERTY_NOTIFY:
+			if window == self.root and event.property.atom == self.atoms['_NET_CLIENT_LIST_STACKING']:
+				self.update_cover()
+			elif window == self.root and event.property.atom == self.atoms['_NET_SHOWING_DESKTOP']:
+				self.showing_desktop_changed()
+			elif window == self.copy and event.property.atom == self.atoms['_NET_WM_STATE']:
+				self.update_cover()
+			elif window == self.stage and event.property.atom == self.atoms['_NET_WM_WINDOW_OPACITY']:
+				self.stage_opacity_changed()
+		elif window == self.copy:
+			if event.type == EXPOSE and event.expose.count == 0:
+				self.copy_contents(False)
+			elif event.type == CONFIGURE_NOTIFY:
+				placed = (event.configure.x, event.configure.y, event.configure.width, event.configure.height)
+				if placed != self.placed:
+					self.placed = placed
+					self.copy_contents(False)
+					# Scripts like Remember Window Positions move the copy, and asking only on a change keeps a refused request from looping.
+					if placed != self.geometry:
+						self.settle_placement()
+					self.update_cover()
+			elif event.type == MAP_NOTIFY:
+				self.copy_mapped = True
+				self.settle_placement()
+				# The pet stays until the copy has finished animating in, or it blinks.
+				self.stop_settling()
+				self.settling = asyncio.get_running_loop().call_later(self.settle, self.settled)
+			elif event.type == UNMAP_NOTIFY:
+				self.stop_settling()
+				self.copy_mapped = False
+				self.copy_shown = False
+				self.update_cover()
+		elif window == self.stage:
+			if event.type == CONFIGURE_NOTIFY:
+				geometry = (event.configure.x, event.configure.y, event.configure.width, event.configure.height)
+				if geometry != self.geometry:
+					self.geometry = geometry
+					self.set_size_hints()
+					self.place_copy()
+					self.update_cover()
+			elif event.type == MAP_NOTIFY:
+				self.map_window(self.display, self.copy)
+			elif event.type == UNMAP_NOTIFY:
+				self.unmap_window(self.display, self.copy)
+			elif event.type == DESTROY_NOTIFY:
+				self.drop()
+
+
 class Session:
 	def __init__(self, options, prefix):
 		self.options = options
@@ -860,6 +1421,9 @@ class Session:
 		self.x = None
 		self.watcher = None
 		self.fullscreen_watcher = None
+		self.mirror = None
+		self.mirror_watcher = None
+		self.pinned = False
 		self.last_focus = None
 		self.stand_in = False
 		self.covering = False
@@ -884,10 +1448,22 @@ class Session:
 					self.watcher = asyncio.create_task(self.watch_pointer())
 				if self.options.fullscreen_poll > 0:
 					self.fullscreen_watcher = asyncio.create_task(self.watch_fullscreen())
+		if self.options.mirror_poll > 0 and not runtime_above_fullscreen():
+			log('the runtime leaves the pet to the window manager, so it needs no taskbar copy')
+		elif self.options.mirror_poll > 0:
+			try:
+				self.mirror = Mirror(self.owner_class, self.options.mirror_settle)
+			except OSError as error:
+				log(f'not putting a copy of the pet on the taskbar: {error}')
+			else:
+				asyncio.get_running_loop().add_reader(self.mirror.fileno(), self.mirror.process)
+				self.mirror_watcher = asyncio.create_task(self.watch_mirror())
+				if not self.options.no_pin_script:
+					await self.pin_copies()
 
 	async def stop(self):
 		self.scanner.cancel()
-		for watcher in (self.watcher, self.fullscreen_watcher):
+		for watcher in (self.watcher, self.fullscreen_watcher, self.mirror_watcher):
 			if watcher:
 				watcher.cancel()
 		for reader in self.readers.values():
@@ -895,12 +1471,54 @@ class Session:
 		self.readers.clear()
 		if self.x:
 			self.x.close()
+		if self.mirror:
+			asyncio.get_running_loop().remove_reader(self.mirror.fileno())
+			self.mirror.close()
+		if self.pinned:
+			await kwin_scripting('unloadScript', 's', PIN_SCRIPT_NAME)
 		if self.helper and self.helper.returncode is None:
 			self.helper.stdin.close()
 			try:
 				await asyncio.wait_for(self.helper.wait(), 5)
 			except asyncio.TimeoutError:
 				self.helper.kill()
+
+	async def pin_copies(self):
+		# Not a failure elsewhere, which report.py would flag as a broken KWin.
+		running, _ = await bus_call(
+			'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'NameHasOwner', 's', 'org.kde.KWin',
+		)
+		if running is False:
+			log(f'KWin isn\'t running, so {PIN_SCRIPT.name} stays unloaded')
+			return
+		loaded, error = await kwin_scripting('isScriptLoaded', 's', PIN_SCRIPT_NAME)
+		if error:
+			log(f'not loading {PIN_SCRIPT.name} into KWin: {error}')
+			return
+		# A bridge that died leaves its script loaded, and KWin won't load the name twice.
+		if loaded:
+			await kwin_scripting('unloadScript', 's', PIN_SCRIPT_NAME)
+			# KWin only lets go of an unloaded script on its next pass through the event loop.
+			for _ in range(20):
+				loaded, error = await kwin_scripting('isScriptLoaded', 's', PIN_SCRIPT_NAME)
+				if not loaded:
+					break
+				await asyncio.sleep(0.05)
+		identifier, error = await kwin_scripting('loadScript', 'ss', str(PIN_SCRIPT), PIN_SCRIPT_NAME)
+		if error or identifier is None or identifier < 0:
+			log(f'KWin would not load {PIN_SCRIPT.name}: {error or identifier}')
+			return
+		# Not Script<id>.run, as ids come from the list's size and can name another script.
+		_, error = await kwin_scripting('start')
+		self.pinned = True
+		if error:
+			log(f'KWin would not start {PIN_SCRIPT.name}: {error}')
+			return
+		self.mirror.scripted = True
+		if self.mirror.stage:
+			self.mirror.update_cover()
+			# self.mirror.flush(self.mirror.display)
+			self.mirror.process()
 
 	async def start_helper(self):
 		arguments = [self.options.wine, str(self.options.helper)]
@@ -988,6 +1606,12 @@ class Session:
 			elif state[0] == 'windowed' and self.covering:
 				self.covering = False
 				await self.send('windowed')
+
+	async def watch_mirror(self):
+		while True:
+			self.mirror.scan()
+			self.mirror.process()
+			await asyncio.sleep(self.options.mirror_poll)
 
 	def focus_state(self):
 		window = self.x.focused_client()
@@ -1271,6 +1895,22 @@ def parse_options():
 		'--fullscreen-poll', type=float, default=0.5,
 		help='seconds between checks for a fullscreen X window having the keyboard, which the helper then stands in for, '
 		'so the app\'s "Enter Game Mode in Fullscreen" can see it; 0 turns this off',
+	)
+	parser.add_argument(
+		'--mirror-poll', type=float, default=1.0,
+		help='seconds between looks for the pet asking for a taskbar entry (the app\'s Show Taskbar Icon) and for a fullscreen '
+		'window covering the copy made for it, which the taskbar and OBS see while the pet itself stays above '
+		'fullscreen games; 0 turns this off',
+	)
+	parser.add_argument(
+		'--mirror-settle', type=float, default=1.0,
+		help='seconds the copy stays invisible after it appears or comes back from Show Desktop, so the compositor\'s '
+		'animation is over before it takes over from the pet; raise it if the pet blinks as Show Taskbar Icon comes on',
+	)
+	parser.add_argument(
+		'--no-pin-script', action='store_true',
+		help='don\'t load pin-copy.js into KWin, which says when a fullscreen window covers the copy; without it, fullscreen '
+		'Wayland apps cover the pet, and a fullscreen game on another virtual desktop brings the pet there',
 	)
 	parser.add_argument(
 		'--keep-drop-targets', action='store_true',
