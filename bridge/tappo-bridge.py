@@ -67,7 +67,7 @@ MODIFIER_BITS = {
 }
 MODIFIER_KEYS = {1: (0xa4, 0x38, 0), 2: (0xa2, 0x1d, 0), 4: (0xa0, 0x2a, 0), 8: (0x5b, 0x5b, 1)}
 
-SHORTCUT_NAMES = ('gameMode', 'switchScreen', 'togglePet')
+SHORTCUT_NAMES = ('gameMode', 'switchScreen', 'togglePet', 'alwaysOnTop', 'autoGameModeOnFullscreen', 'disablePointerMonitoring')
 DEFAULT_NAMED_SHORTCUTS = {'gameMode': (0, 0x76), 'switchScreen': (0, 0x77), 'togglePet': (0, 0x78)}
 DEFAULT_SHORTCUTS = set(DEFAULT_NAMED_SHORTCUTS.values())
 SHORTCUT_CODES = {vk: code for code, vk in SHORTCUT_KEYS.items()}
@@ -342,7 +342,7 @@ class Shortcuts:
 			log(f'could not read {self.path}, keeping the shortcuts read before: {error}')
 			return self.bindings
 		# Tappo writes this file, so it decides which keys come through for real.
-		# Only its three shortcuts count, and a key with no modifiers only if it's an F-key, or a binding could time your typing.
+		# Only its own shortcut names count, and a key with no modifiers only if it's an F-key, or a binding could time your typing.
 		typing = {binding for binding in bindings if not binding[0] and not 0x70 <= binding[1] <= 0x87}
 		if typing:
 			log(f'sending stand-ins for {sorted(typing)}: a shortcut with no modifiers has to be an F-key')
